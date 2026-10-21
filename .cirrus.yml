@@ -1,0 +1,37 @@
+# P2P Chat — free CI build on Cirrus CI (public repository).
+# Builds the debug APK on Cirrus's own runners; the artifact can be
+# downloaded from the task page and attached to a GitHub Release.
+container:
+  image: eclipse-temurin:17-jdk
+  cpu: 4
+  memory: 8G
+
+env:
+  ANDROID_HOME: /tmp/android-sdk
+  GRADLE_USER_HOME: /tmp/gradle-home
+  GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+gradle_cache:
+  folder: /tmp/gradle-home/caches
+
+task:
+  name: Build APK
+  setup_script:
+    - apt-get update -qq && apt-get install -y -qq unzip curl > /dev/null
+    - mkdir -p $ANDROID_HOME/cmdline-tools
+    - curl -sL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+    - unzip -q /tmp/cmdtools.zip -d /tmp/cmdt && mv /tmp/cmdt/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+    - yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses > /dev/null
+    - $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;34.0.0" > /dev/null
+    - curl -sL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+    - unzip -q /tmp/gradle.zip -d /tmp && mv /tmp/gradle-8.7 /tmp/gradle
+    - echo "sdk.dir=$ANDROID_HOME" > local.properties
+  test_script:
+    - /tmp/gradle/bin/gradle :core-common:test :core-crypto:test :mesh-engine:test --console=plain
+  build_script:
+    - /tmp/gradle/bin/gradle :app:assembleDebug --console=plain
+    - cp app/build/outputs/apk/debug/app-debug.apk P2PChat-v1.0.0.apk
+    - ls -la P2PChat-v1.0.0.apk
+  apk_artifacts:
+    path: P2PChat-v1.0.0.apk
+    type: application/vnd.android.package-archive

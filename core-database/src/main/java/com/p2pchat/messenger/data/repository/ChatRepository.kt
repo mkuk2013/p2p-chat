@@ -25,7 +25,7 @@ import java.util.UUID
  * (MeshEvent.AckReceived), never when a relay merely accepts it.
  *
  * TODO(contract): MeshRouter's send entry point is taken from the shared
- * contract as `router.send(envelope)`. If mesh-engine names it differently,
+ * contract as `router.sendEnvelope(envelope)`. If mesh-engine names it differently,
  * adjust only [dispatch].
  */
 class ChatRepository(
@@ -107,7 +107,7 @@ class ChatRepository(
         // Router queues into the OutboxStore itself; if no router is wired
         // (e.g. relay service stopped), the caller can enqueue via
         // RoomOutboxStore directly — the message stays QUEUED either way.
-        router?.send(envelope)
+        router?.sendEnvelope(envelope)
     }
 
     /** Called by the app layer for MeshEvent.MessageReceived addressed to us. */

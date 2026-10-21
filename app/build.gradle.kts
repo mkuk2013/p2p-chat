@@ -4,6 +4,22 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Launcher/splash PNGs are generated assets: the master logo travels in this
+// repo as base64 text (branding/logo-512.b64.txt), so a fresh clone may not
+// contain the PNG files yet. Regenerate them before resources are processed.
+// Skipped automatically when the icons are already present (normal local dev).
+val regenIcons = tasks.register<Exec>("regenIcons") {
+    description = "Regenerates launcher/splash PNGs from branding/logo-512.b64.txt"
+    onlyIf { !file("src/main/res/mipmap-xxxhdpi/ic_launcher.png").exists() }
+    workingDir = rootDir
+    commandLine(
+        "bash", "-c",
+        "python3 -m pip install --quiet pillow 2>/dev/null || pip3 install --quiet pillow; " +
+            "python3 branding/regen-icons.py"
+    )
+}
+tasks.named("preBuild") { dependsOn(regenIcons) }
+
 android {
     namespace = "com.p2pchat.messenger"
     compileSdk = 34

@@ -133,3 +133,5 @@ Room persistence, foreground service, full UI. **Still requiring real-device
 validation:** end-to-end BLE delivery across phone models/OEMs, background
 relay survival under OEM battery managers, and the multi-hop physical test
 plan above. Debug APK builds with `./gradlew :app:assembleDebug`.
+
+<!-- ci: cirrus build trigger -->

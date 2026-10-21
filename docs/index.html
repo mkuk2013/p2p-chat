@@ -217,9 +217,9 @@ async function downloadAPK(){
       chunks.push(u);
     }
     var blob=new Blob(chunks,{type:'application/vnd.android.package-archive'});
-    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='P2PChat-v1.0.0.apk';
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='P2PChat-v1.0.1.apk';
     document.body.appendChild(a); a.click(); a.remove();
-    t.textContent='Download started \u2014 check your downloads for P2PChat-v1.0.0.apk';
+    t.textContent='Download started \u2014 check your downloads for P2PChat-v1.0.1.apk';
     setTimeout(function(){t.style.display='none'},6000);
   }catch(e){ t.textContent='Download failed \u2014 please check your connection and try again.'; }
   return false;

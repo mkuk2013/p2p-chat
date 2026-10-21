@@ -13,6 +13,7 @@ import com.p2pchat.messenger.crypto.CryptoManager
 import com.p2pchat.messenger.crypto.Identity
 import com.p2pchat.messenger.data.IdentityStore
 import com.p2pchat.messenger.data.P2PDatabase
+import com.p2pchat.messenger.data.RoomOutboxStore
 import com.p2pchat.messenger.data.dao.OutboxDao
 import com.p2pchat.messenger.data.entity.OutboxEntity
 import com.p2pchat.messenger.data.repository.ChatRepository

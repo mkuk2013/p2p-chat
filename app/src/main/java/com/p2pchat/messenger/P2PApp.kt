@@ -51,8 +51,18 @@ class P2PApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        container = AppContainer(this)
-        container.bootstrap()
+        // Diagnostic build: capture any startup crash to a file BEFORE any
+        // app machinery runs, so MainActivity can show it on next launch.
+        CrashReporter.install(this)
+        try {
+            container = AppContainer(this)
+            CrashReporter.breadcrumb(this, "container-created")
+            container.bootstrap()
+            CrashReporter.breadcrumb(this, "bootstrap-done")
+        } catch (t: Throwable) {
+            CrashReporter.recordThrowable(this, "P2PApp.onCreate", t)
+            throw t
+        }
     }
 }
 

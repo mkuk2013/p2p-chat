@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Simple platform theme: the Compose Material 3 theme provides all
+         in-app styling (dark charcoal / cyan / green). No SplashScreen
+         library dependency is pulled in; SplashScreen is a Compose screen. -->
+    <style name="Theme.P2PChat" parent="android:Theme.Material.NoActionBar" />
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">P2P Chat</string>
+    <string name="app_tagline">Connect. Relay. Chat.</string>
+    <string name="mesh_notification_channel_name">Mesh relay</string>
+    <string name="mesh_notification_channel_description">Shown while P2P Chat is relaying messages in the background</string>
+</resources>

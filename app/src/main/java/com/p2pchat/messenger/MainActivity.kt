@@ -30,6 +30,8 @@ import com.p2pchat.messenger.ui.theme.P2PChatTheme
  * launch, a plain framework-views report screen is shown BEFORE the
  * Compose path (and before touching [AppContainer]) so the failure can
  * be read and copied even if the Compose/mesh stack itself is what died.
+ * The same screen is shown when app startup itself failed
+ * ([P2PApp.startupError] set, container never built).
  */
 class MainActivity : ComponentActivity() {
 
@@ -41,11 +43,36 @@ class MainActivity : ComponentActivity() {
             showCrashReport(crash)
             return
         }
-        startNormal()
+        val app = application as P2PApp
+        val container = app.container
+        if (container == null) {
+            // Startup failed before the container existed. The failure was
+            // recorded to the crash file in P2PApp.onCreate (handled above);
+            // if somehow nothing was written, render the in-memory error.
+            showCrashReport(renderStartupFailure(app.startupError))
+            return
+        }
+        startNormal(container)
     }
 
-    private fun startNormal() {
-        val container = (application as P2PApp).container
+    private fun renderStartupFailure(error: Throwable?): String {
+        if (error == null) {
+            return "P2P Chat failed to start, but no error was recorded.\n" +
+                "Please clear app data and try again; if it persists, this " +
+                "build could not build its app container for an unknown reason."
+        }
+        val trace = java.io.StringWriter().also { sw ->
+            java.io.PrintWriter(sw).use { pw -> error.printStackTrace(pw) }
+        }.toString()
+        return buildString {
+            append("==== P2P Chat startup failure ====\n")
+            append("where: P2PApp.onCreate (container not built)\n")
+            append("---- stack trace ----\n")
+            append(trace)
+        }
+    }
+
+    private fun startNormal(container: AppContainer) {
         setContent {
             P2PChatTheme {
                 Surface(

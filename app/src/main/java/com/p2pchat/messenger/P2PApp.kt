@@ -46,22 +46,39 @@ import org.json.JSONObject
  */
 class P2PApp : Application() {
 
-    lateinit var container: AppContainer
+    /** Null until [onCreate] has successfully built the container. */
+    @Volatile
+    var container: AppContainer? = null
         private set
+
+    /** The startup failure, if [container] could not be built. */
+    @Volatile
+    var startupError: Throwable? = null
+        private set
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        // Diagnostic build: install the crash handler at the earliest
+        // possible point — before the androidx.startup InitializationProvider
+        // runs and before onCreate — so even a provider/class-loading crash
+        // is recorded to a file MainActivity can show on the next launch.
+        CrashReporter.install(base)
+    }
 
     override fun onCreate() {
         super.onCreate()
-        // Diagnostic build: capture any startup crash to a file BEFORE any
-        // app machinery runs, so MainActivity can show it on next launch.
-        CrashReporter.install(this)
+        // NON-FATAL by design: if container construction dies, record the
+        // failure and let the process live so MainActivity can surface the
+        // report instead of the app crashing identically on every launch.
         try {
-            container = AppContainer(this)
+            val built = AppContainer(this)
+            container = built
             CrashReporter.breadcrumb(this, "container-created")
-            container.bootstrap()
+            built.bootstrap()
             CrashReporter.breadcrumb(this, "bootstrap-done")
         } catch (t: Throwable) {
+            startupError = t
             CrashReporter.recordThrowable(this, "P2PApp.onCreate", t)
-            throw t
         }
     }
 }

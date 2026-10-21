@@ -79,6 +79,12 @@ class MeshForegroundService : Service() {
 
         serviceScope.launch {
             val container = (application as P2PApp).container
+            if (container == null) {
+                // App startup failed before the container was built — there
+                // is nothing to relay with; stop instead of crashing.
+                stopSelf()
+                return@launch
+            }
             val identity = container.ensureIdentity(null)
             val transport = container.bleTransport
             if (identity == null || transport == null) {
@@ -114,7 +120,7 @@ class MeshForegroundService : Service() {
     // ---------------------------------------------------------- duty cycle
 
     private fun startDutyCycle() {
-        val transport = (application as P2PApp).container.bleTransport ?: return
+        val transport = (application as P2PApp).container?.bleTransport ?: return
         dutyCycleJob?.cancel()
         dutyCycleJob = serviceScope.launch {
             // Advertising is cheap next to scanning and makes this node
@@ -141,7 +147,7 @@ class MeshForegroundService : Service() {
     // ---------------------------------------------------------- notification
 
     private fun observeConnectionCount() {
-        val transport = (application as P2PApp).container.bleTransport ?: return
+        val transport = (application as P2PApp).container?.bleTransport ?: return
         notificationJob?.cancel()
         notificationJob = serviceScope.launch {
             transport.connections.collectLatest { connections ->

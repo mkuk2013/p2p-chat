@@ -17,8 +17,10 @@ import java.io.StringWriter
  * installed handler so the system crash flow is unchanged.
  *
  * Plain framework APIs only — no Compose/Room/mesh code — so it can run as
- * the very first statement of [P2PApp.onCreate] and be read back by
- * [MainActivity] without touching the (possibly broken) app stack.
+ * the very first statement of [P2PApp.attachBaseContext] (before the
+ * androidx.startup ContentProvider and before [P2PApp.onCreate]) and be
+ * read back by [MainActivity] without touching the (possibly broken) app
+ * stack.
  */
 object CrashReporter {
 
@@ -28,14 +30,20 @@ object CrashReporter {
     @Volatile
     private var installed = false
 
-    /** Install the handler. Idempotent; call as the first line of Application.onCreate. */
-    fun install(app: P2PApp) {
+    /**
+     * Install the handler. Idempotent; call as the first line of
+     * Application.attachBaseContext with the base context passed to it.
+     * Only Context-level APIs (filesDir / external files dir) are used, so
+     * the base context alone is enough — the Application object itself is
+     * not fully constructed at that point.
+     */
+    fun install(context: Context) {
         if (installed) return
         installed = true
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
-                writeReport(app, "uncaught on thread '${thread.name}'", throwable)
+                writeReport(context, "uncaught on thread '${thread.name}'", throwable)
             } catch (_: Throwable) {
                 // Never let reporting mask the original crash.
             }
@@ -46,7 +54,7 @@ object CrashReporter {
                 System.exit(10)
             }
         }
-        breadcrumb(app, "crash-reporter-installed")
+        breadcrumb(context, "crash-reporter-installed")
     }
 
     /**

@@ -209,17 +209,17 @@ async function downloadAPK(){
   var t=document.getElementById('dltoast'); t.style.display='block'; t.textContent='Preparing your download\u2026';
   try{
     var chunks=[];
-    for(var i=1;i<=4;i++){
-      t.textContent='Downloading P2P Chat\u2026 part '+i+' of 4';
+    for(var i=1;i<=5;i++){
+      t.textContent='Downloading P2P Chat\u2026 part '+i+' of 5';
       var r=await fetch('apk/part'+i+'.b64.txt'); if(!r.ok) throw new Error('part '+i);
       var s=await r.text(); var bin=atob(s.replace(/\s/g,''));
       var u=new Uint8Array(bin.length); for(var j=0;j<bin.length;j++) u[j]=bin.charCodeAt(j);
       chunks.push(u);
     }
     var blob=new Blob(chunks,{type:'application/vnd.android.package-archive'});
-    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='P2PChat-v1.0.1.apk';
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='P2PChat-v1.0.2.apk';
     document.body.appendChild(a); a.click(); a.remove();
-    t.textContent='Download started \u2014 check your downloads for P2PChat-v1.0.1.apk';
+    t.textContent='Download started \u2014 check your downloads for P2PChat-v1.0.2.apk';
     setTimeout(function(){t.style.display='none'},6000);
   }catch(e){ t.textContent='Download failed \u2014 please check your connection and try again.'; }
   return false;

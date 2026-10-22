@@ -108,7 +108,7 @@ fun ProfileScreen(
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "Public key fingerprint (Ed25519, hex)",
+            text = "Your safety code",
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.fillMaxWidth()
         )
@@ -133,8 +133,8 @@ fun ProfileScreen(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Share your Peer ID and compare fingerprints in person before " +
-                "trusting a contact — relays can forward messages but cannot read them.",
+            text = "Share your Peer ID and compare safety codes in person before " +
+                "trusting a contact — other phones can pass messages along but cannot read them.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

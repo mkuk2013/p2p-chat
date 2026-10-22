@@ -34,9 +34,13 @@ import com.p2pchat.messenger.ble.model.IncomingData
 import com.p2pchat.messenger.core.transport.ChunkReassembler
 import com.p2pchat.messenger.core.transport.GattTieBreak
 import com.p2pchat.messenger.core.transport.IdentityResolver
+import com.p2pchat.messenger.core.transport.LinkTestFrames
+import com.p2pchat.messenger.core.transport.LinkTestResult
 import com.p2pchat.messenger.core.transport.PacketChunker
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,6 +139,14 @@ class BleTransport(
     private val mtuByAddress = ConcurrentHashMap<String, Int>()
     private val sendMutexByAddress = ConcurrentHashMap<String, Mutex>()
     private val writeAckWaiters = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Boolean>>()
+
+    // -- Connection-speed check (v1.2.0): ping/pong waiters keyed by
+    // frame sequence, and a single-test-at-a-time guard. Test frames
+    // ride the normal data channel and are demuxed in
+    // handleIncomingChunk, so the numbers describe the real link.
+    private val pongWaiters = ConcurrentHashMap<Int, kotlinx.coroutines.CompletableDeferred<Long>>()
+    private val linkTestInFlight = AtomicBoolean(false)
+    private val linkTestSeq = AtomicInteger(0)
     private val connectTimeouts = ConcurrentHashMap<String, Runnable>()
     private val reconnectAttempts = ConcurrentHashMap<String, Int>()
 
@@ -201,6 +213,15 @@ class BleTransport(
          * failed resolver attempt. */
         const val MAX_READ_BUSY_RETRIES: Int = 5
         const val READ_BUSY_RETRY_DELAY_MS: Long = 300L
+
+        /** Connection-speed check shape: a few small pings for the
+         * round-trip time, then a burst of full-size frames timed end
+         * to end — the honest app-channel rate, radio pacing included. */
+        const val LINK_TEST_PINGS: Int = 5
+        const val LINK_TEST_PING_BYTES: Int = 100
+        const val LINK_TEST_PONG_TIMEOUT_MS: Long = 2_000L
+        const val LINK_TEST_BURST_FRAMES: Int = 40
+        const val LINK_TEST_FRAME_BYTES: Int = 512
 
         /** First 8 bytes of SHA-256(peerId) — the advertisement identity hint. */
         fun identityHint(peerId: String): ByteArray =
@@ -352,7 +373,7 @@ class BleTransport(
         postIdentityStatus(
             address,
             IdentityPhase.RESOLVING,
-            "Connected — reading identity (try ${resolver.state.attempt}/${resolver.maxAttempts})…",
+            "Connected — finishing the connection (try ${resolver.state.attempt}/${resolver.maxAttempts})…",
         )
         val issued = try {
             gatt.readCharacteristic(identity)
@@ -442,6 +463,22 @@ class BleTransport(
         identityTimeouts.remove(address)?.let { handler.removeCallbacks(it) }
     }
 
+    /** Internal resolver failure reasons → words for the user. The
+     *  technical originals stay in diagnostics; status lines shown in
+     *  the main flow never say "identity", "GATT" or "payload". */
+    private fun plainFailureReason(reason: String?): String = when {
+        reason == null -> "something went wrong"
+        reason == "timeout" -> "the other phone didn't answer in time"
+        reason == "this device does not offer an identity" ->
+            "the other phone didn't introduce itself"
+        reason == "the Bluetooth stack refused the identity read" ->
+            "Bluetooth refused a step"
+        reason == "the identity read came back empty" ->
+            "the other phone didn't answer properly"
+        reason.startsWith("GATT status") -> "Bluetooth reported an error"
+        else -> reason
+    }
+
     private fun onIdentityReadFailed(address: String, gattStatus: Int?, reason: String) {
         cancelIdentityTimeout(address)
         val resolver = identityResolvers[address] ?: return
@@ -462,8 +499,8 @@ class BleTransport(
                 postIdentityStatus(
                     address,
                     IdentityPhase.RESOLVING,
-                    "Identity read failed (${failureReason ?: "error"}) — " +
-                        "retrying ${resolver.state.attempt}/${resolver.maxAttempts}…",
+                    "Couldn't finish connecting (${plainFailureReason(failureReason)}) — " +
+                        "trying again ${resolver.state.attempt}/${resolver.maxAttempts}…",
                 )
                 enqueueGattOp(address, GattOp.ReadIdentity)
             }
@@ -471,8 +508,8 @@ class BleTransport(
                 postIdentityStatus(
                     address,
                     IdentityPhase.RESOLVING,
-                    "Identity read failed (${failureReason ?: "error"}) — the link " +
-                        "looks stuck, resetting it and reconnecting…",
+                    "Couldn't finish connecting (${plainFailureReason(failureReason)}) — " +
+                        "the connection looks stuck, starting it again…",
                 )
                 resolver.onLinkResetForRetry()
                 // A bare re-read on a possibly wedged connection is not
@@ -486,12 +523,12 @@ class BleTransport(
             }
             IdentityResolver.Action.GIVE_UP -> {
                 val state = resolver.state
-                val statusNote = state.lastGattStatus?.let { " (GATT status $it)" } ?: ""
+                val statusNote = state.lastGattStatus?.let { " (error $it)" } ?: ""
                 postIdentityStatus(
                     address,
                     IdentityPhase.FAILED,
-                    "Could not read this phone's identity — " +
-                        "${state.lastFailure ?: "unknown error"}$statusNote. Tap to retry.",
+                    "Couldn't connect to this phone — " +
+                        "${plainFailureReason(state.lastFailure)}$statusNote. Tap Try again.",
                 )
             }
         }
@@ -505,7 +542,7 @@ class BleTransport(
         if (resolver != null && !resolver.isResolved) {
             resolver.onResolved()
         }
-        postIdentityStatus(address, IdentityPhase.RESOLVED, "Identity exchanged — ready to chat")
+        postIdentityStatus(address, IdentityPhase.RESOLVED, "Connected — ready to chat")
     }
 
     /**
@@ -583,7 +620,7 @@ class BleTransport(
         postIdentityStatus(
             address,
             IdentityPhase.RESOLVING,
-            "Two links collided — keeping one link and exchanging identity over it…",
+            "Both phones connected at once — keeping one connection…",
         )
         if (subscribedServerPeers.contains(address)) {
             setConnState(address, ConnState.READY)
@@ -1012,7 +1049,7 @@ class BleTransport(
             postIdentityStatus(
                 address,
                 IdentityPhase.RESOLVING,
-                "The other phone is connecting to us — identity exchanges over that link…",
+                "The other phone is connecting to us…",
             )
             return true
         }
@@ -1091,7 +1128,7 @@ class BleTransport(
                 postIdentityStatus(
                     address,
                     IdentityPhase.FAILED,
-                    "Other phone did not answer — tap to retry.",
+                    "The other phone didn't answer — tap Try again.",
                 )
                 setConnState(address, ConnState.FAILED)
                 disconnectInternal(address, manual = false)
@@ -1217,7 +1254,7 @@ class BleTransport(
                 postIdentityStatus(
                     address,
                     IdentityPhase.FAILED,
-                    "Service discovery failed (GATT status $status) — tap to retry.",
+                    "Couldn't finish connecting (error $status) — tap Try again.",
                 )
                 setConnState(address, ConnState.FAILED)
                 return
@@ -1432,8 +1469,81 @@ class BleTransport(
             handleIdentityPayload(address, complete)
             return
         }
+        // Connection-speed check frames ("P2PT" magic — cannot collide
+        // with the "P2P1" mesh magic or the '{' identity JSON): consumed
+        // here, never forwarded to the mesh layer.
+        if (LinkTestFrames.isTestFrame(complete)) {
+            handleLinkTestFrame(address, complete)
+            return
+        }
         scope.launch {
             _incoming.emit(IncomingData(address, complete))
+        }
+    }
+
+    /** A speed-check frame arrived: answer pings at once, complete the
+     *  waiting pong for our own measurement, swallow data frames (their
+     *  arrival IS the measurement — they are not chat traffic). */
+    private fun handleLinkTestFrame(address: String, bytes: ByteArray) {
+        val frame = LinkTestFrames.parse(bytes) ?: return
+        when (frame.type) {
+            LinkTestFrames.TYPE_PING -> {
+                val pong = LinkTestFrames.pongOf(bytes) ?: return
+                scope.launch { runCatching { send(address, pong) } }
+            }
+            LinkTestFrames.TYPE_PONG -> {
+                pongWaiters.remove(frame.seq)?.complete(System.nanoTime())
+            }
+            else -> Unit // TYPE_DATA: measurement payload, nothing to do
+        }
+    }
+
+    /**
+     * Measure the real speed of the link to [address] (master spec §7):
+     * five ping/pong round trips, then a burst of data frames pushed as
+     * fast as the channel accepts them. Returns null when there is no
+     * usable link, another test is already running, or not a single
+     * ping came back — the UI shows an honest "couldn't measure" state
+     * instead of invented numbers.
+     */
+    suspend fun runLinkTest(address: String): LinkTestResult? {
+        if (!isReady(address) && !serverDevices.containsKey(address)) return null
+        if (!linkTestInFlight.compareAndSet(false, true)) return null
+        try {
+            val rttSamplesMs = mutableListOf<Long>()
+            repeat(LINK_TEST_PINGS) {
+                val seq = linkTestSeq.incrementAndGet()
+                val waiter = kotlinx.coroutines.CompletableDeferred<Long>()
+                pongWaiters[seq] = waiter
+                val sentAtNs = System.nanoTime()
+                val sent = send(address, LinkTestFrames.encode(LinkTestFrames.TYPE_PING, seq, LINK_TEST_PING_BYTES))
+                if (sent) {
+                    val answeredAtNs = withTimeoutOrNull(LINK_TEST_PONG_TIMEOUT_MS) { waiter.await() }
+                    if (answeredAtNs != null) {
+                        rttSamplesMs += (answeredAtNs - sentAtNs) / 1_000_000L
+                    }
+                }
+                pongWaiters.remove(seq)
+            }
+            if (rttSamplesMs.isEmpty()) return null
+            var sentBytes = 0L
+            val burstStartNs = System.nanoTime()
+            for (i in 0 until LINK_TEST_BURST_FRAMES) {
+                val seq = linkTestSeq.incrementAndGet()
+                val ok = send(address, LinkTestFrames.encode(LinkTestFrames.TYPE_DATA, seq, LINK_TEST_FRAME_BYTES))
+                if (!ok) break
+                sentBytes += LINK_TEST_FRAME_BYTES
+            }
+            val durationMs = (System.nanoTime() - burstStartNs) / 1_000_000L
+            if (sentBytes == 0L) return null
+            return LinkTestResult(
+                address = address,
+                totalBytes = sentBytes,
+                durationMs = durationMs,
+                rttSamplesMs = rttSamplesMs,
+            )
+        } finally {
+            linkTestInFlight.set(false)
         }
     }
 

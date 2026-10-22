@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.p2pchat.messenger.data.dao.CallRecordDao
 import com.p2pchat.messenger.data.dao.ConversationDao
 import com.p2pchat.messenger.data.dao.MessageDao
 import com.p2pchat.messenger.data.dao.OutboxDao
@@ -14,6 +15,7 @@ import com.p2pchat.messenger.data.dao.PeerDao
 import com.p2pchat.messenger.data.dao.SeenDao
 import com.p2pchat.messenger.data.dao.VoiceChunkDao
 import com.p2pchat.messenger.data.dao.VoiceTransferDao
+import com.p2pchat.messenger.data.entity.CallRecordEntity
 import com.p2pchat.messenger.data.entity.ConversationEntity
 import com.p2pchat.messenger.data.entity.MessageEntity
 import com.p2pchat.messenger.data.entity.OutboxEntity
@@ -30,9 +32,10 @@ import com.p2pchat.messenger.data.entity.VoiceTransferEntity
         OutboxEntity::class,
         SeenEntity::class,
         VoiceTransferEntity::class,
-        VoiceChunkEntity::class
+        VoiceChunkEntity::class,
+        CallRecordEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -44,6 +47,7 @@ abstract class P2PDatabase : RoomDatabase() {
     abstract fun seenDao(): SeenDao
     abstract fun voiceTransferDao(): VoiceTransferDao
     abstract fun voiceChunkDao(): VoiceChunkDao
+    abstract fun callRecordDao(): CallRecordDao
 
     companion object {
         const val DATABASE_NAME = "p2pchat.db"
@@ -83,9 +87,27 @@ abstract class P2PDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v2 → v3 (v1.2.0 simplicity release): the call-history table
+         * behind the Calls tab. Pure addition — no existing table is
+         * touched, so all chats, voice notes and settings carry over.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `call_records` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`peerId` TEXT NOT NULL, `peerName` TEXT NOT NULL, " +
+                        "`direction` TEXT NOT NULL, `outcome` TEXT NOT NULL, " +
+                        "`reason` TEXT, `startedAtMs` INTEGER NOT NULL, " +
+                        "`durationMs` INTEGER NOT NULL)"
+                )
+            }
+        }
+
         fun create(context: Context): P2PDatabase =
             Room.databaseBuilder(context.applicationContext, P2PDatabase::class.java, DATABASE_NAME)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

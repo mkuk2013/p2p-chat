@@ -47,6 +47,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     container: AppContainer,
     onBack: () -> Unit,
+    onOpenMesh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -85,9 +86,32 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(12.dp))
 
+        // ------------------------------------------------------- connection
+        Text(
+            text = "Connection",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "See who you are connected to and measure how fast " +
+                "the connection is.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onOpenMesh,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Check connection speed")
+        }
+
+        Spacer(Modifier.height(24.dp))
+
         // ---------------------------------------------------------- relay
         Text(
-            text = "Relay",
+            text = "Helping others",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
@@ -97,11 +121,11 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Background relay mode", style = MaterialTheme.typography.bodyLarge)
+                Text("Pass messages in the background", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = "Runs the mesh foreground service so this phone keeps " +
-                        "relaying with the screen locked. A persistent notification " +
-                        "is shown while it is on.",
+                    text = "Keeps passing other people's messages along " +
+                        "with the screen locked. Android shows a small " +
+                        "notice while this is on.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -122,9 +146,9 @@ fun SettingsScreen(
             )
         }
         Text(
-            text = "Platform limits: after a force-stop, a reboot on some phones, " +
-                "or aggressive OEM battery killing, relaying pauses until the app " +
-                "is opened again. No app can honestly promise otherwise.",
+            text = "Honest limit: if the app is force-stopped, the phone " +
+                "restarts, or the battery saver kills it, passing messages " +
+                "pauses until you open the app again.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -133,14 +157,14 @@ fun SettingsScreen(
 
         // ---------------------------------------------------------- battery
         Text(
-            text = "Battery — scan duty cycle",
+            text = "Battery",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "How long the radio scans for peers, then rests. Shorter " +
-                "rest finds peers faster; longer rest saves battery.",
+            text = "How often this phone looks for people nearby. Looking " +
+                "more often finds people faster but uses more battery.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -193,7 +217,7 @@ fun SettingsScreen(
         val currentIdentity = identity
         if (currentIdentity != null) {
             Text(
-                text = "Your identity fingerprint (Ed25519)",
+                text = "Your safety code",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -205,18 +229,17 @@ fun SettingsScreen(
             Spacer(Modifier.height(8.dp))
         }
         Text(
-            text = "Messages are end-to-end encrypted (X25519 key agreement, " +
-                "HKDF-SHA256, AES-256-GCM) and signed (Ed25519). Relay phones " +
-                "forward sealed envelopes — they cannot read message content. " +
-                "Private keys are stored encrypted with a key held in the " +
-                "Android Keystore and never leave this phone.",
+            text = "Your messages are locked so only you and the person " +
+                "you write to can read them — phones that pass a message " +
+                "along cannot open it. Your secret keys stay on this " +
+                "phone, protected by Android, and never leave it.",
             style = MaterialTheme.typography.bodyMedium
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Recovery limitation: if you lose this phone, your identity " +
-                "and history cannot be recovered — there is no server backup " +
-                "by design. A new phone means a new identity and a new Peer ID.",
+            text = "If you lose this phone, your chats cannot be " +
+                "recovered — there is no server copy, by design. A new " +
+                "phone starts fresh, and people will see a new you.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.error
         )
@@ -256,9 +279,10 @@ fun SettingsScreen(
             title = { Text("Clear all data?") },
             text = {
                 Text(
-                    "This permanently deletes every conversation, message, " +
-                        "queued envelope, known peer and your identity keys " +
-                        "from this phone. It cannot be undone."
+                    "This permanently deletes every chat, message, " +
+                        "waiting message, person you know, call history " +
+                        "and your secret keys from this phone. It cannot " +
+                        "be undone."
                 )
             },
             confirmButton = {
@@ -267,8 +291,8 @@ fun SettingsScreen(
                         showClearConfirm = false
                         scope.launch {
                             container.clearAllData()
-                            clearedNote = "All local data cleared. Restart the app " +
-                                "so the relay stops using the old identity."
+                            clearedNote = "Everything on this phone was " +
+                                "cleared. Restart the app to finish."
                         }
                     }
                 ) { Text("Delete everything") }
@@ -283,7 +307,7 @@ fun SettingsScreen(
 private data class DutyOption(val title: String, val subtitle: String, val onMs: Long, val offMs: Long)
 
 private val DUTY_OPTIONS = listOf(
-    DutyOption("Responsive", "Scan 10 s · rest 10 s — finds peers fast, uses more battery", 10_000L, 10_000L),
-    DutyOption("Balanced", "Scan 10 s · rest 25 s — the default", 10_000L, 25_000L),
-    DutyOption("Battery saver", "Scan 10 s · rest 60 s — slowest discovery, gentlest on battery", 10_000L, 60_000L)
+    DutyOption("Responsive", "Look 10 s · rest 10 s — finds people fast, uses more battery", 10_000L, 10_000L),
+    DutyOption("Balanced", "Look 10 s · rest 25 s — the default", 10_000L, 25_000L),
+    DutyOption("Battery saver", "Look 10 s · rest 60 s — slowest to find people, gentlest on battery", 10_000L, 60_000L)
 )

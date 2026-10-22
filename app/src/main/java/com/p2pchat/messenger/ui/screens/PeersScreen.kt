@@ -46,13 +46,14 @@ import com.p2pchat.messenger.ui.components.PeerAvatar
 import kotlinx.coroutines.launch
 
 /**
- * "Select contact" (WhatsApp's New Chat screen): known peers on top,
- * live-discovered devices below. There is NO separate Connect step and
- * NO waiting room — tapping a known peer opens its chat immediately,
- * and tapping an undiscovered device opens its device chat immediately
- * while connecting + identity exchange proceed inside it (bounded, with
- * a truthful failure state and retry). Only devices actually
- * discovered around the user are ever listed.
+ * "People nearby" (WhatsApp's New Chat screen, and the People tab of
+ * the home shell when [embedded]): people you know on top, people
+ * found around you below. There is NO separate Connect step and NO
+ * waiting room — tapping a known person opens the chat immediately,
+ * and tapping a newly found device opens its chat immediately while
+ * connecting proceeds inside it (bounded, with a truthful failure
+ * state and retry). Only devices actually discovered around the user
+ * are ever listed.
  */
 @Composable
 fun PeersScreen(
@@ -63,7 +64,8 @@ fun PeersScreen(
     onOpenChat: (String) -> Unit,
     onOpenDeviceChat: (String) -> Unit,
     onBack: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    embedded: Boolean = false
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -139,17 +141,19 @@ fun PeersScreen(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(top = 8.dp)
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+            if (!embedded) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                }
             }
             Column {
                 Text(
-                    text = "Select contact",
+                    text = "People nearby",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Tap a person or device — the chat opens right away",
+                    text = "Tap a name to start chatting",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -159,8 +163,8 @@ fun PeersScreen(
 
         if (bleTransport == null && nearbyTransport == null) {
             Text(
-                text = "Create your identity first (setup screen) — discovery " +
-                    "starts once this phone has a peer identity.",
+                text = "Finish setting up first — finding people nearby " +
+                    "starts right after that.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -175,8 +179,7 @@ fun PeersScreen(
                     .padding(vertical = 6.dp)
             ) {
                 Text(
-                    text = "Nearby direct link (faster chats + voice calls) " +
-                        "needs a permission.",
+                    text = "Faster chats and voice calls need one permission.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
@@ -191,7 +194,7 @@ fun PeersScreen(
         if (isScanning) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Text(
-                text = "Scanning for P2P Chat devices around you…",
+                text = "Looking for people nearby…",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 4.dp)
@@ -201,13 +204,13 @@ fun PeersScreen(
         LazyColumn(modifier = Modifier.weight(1f)) {
             if (knownPeers.isNotEmpty()) {
                 item {
-                    SectionTitle("Known peers")
+                    SectionTitle("People you know")
                 }
                 items(knownPeers, key = { "known-${it.peerId}" }) { peer ->
                     ContactRow(
                         name = peer.displayName,
                         peerId = peer.peerId,
-                        subtitle = "Known peer · tap to chat",
+                        subtitle = "Tap to chat",
                         connecting = false,
                         onClick = { openChat(peer.peerId, peer.displayName) }
                     )
@@ -228,17 +231,15 @@ fun PeersScreen(
                         com.p2pchat.messenger.ble.model.IdentityPhase.RESOLVING ||
                         state == ConnState.CONNECTING || state == ConnState.DISCOVERING)
                 ContactRow(
-                    name = peer.displayName
-                        ?: peer.peerId?.let { "Peer ${it.take(8)}" }
-                        ?: "P2P Chat device",
+                    name = peer.displayName ?: "P2P Chat device",
                     peerId = peer.peerId ?: peer.deviceAddress,
                     subtitle = when {
-                        // The bounded resolver's own words — including
-                        // the failure reason once the budget is spent.
+                        // The connection's own one-line status, in
+                        // plain words — including what went wrong once
+                        // the attempts are used up.
                         linkStatus != null && peer.peerId == null -> linkStatus.message
-                        peer.peerId != null -> "In range · tap to chat"
-                        else -> "Bluetooth · signal ${peer.rssi} dBm · tap to " +
-                            "connect and chat"
+                        peer.peerId != null -> "Nearby · tap to chat"
+                        else -> "Tap to chat"
                     },
                     connecting = connecting,
                     onClick = {
@@ -271,10 +272,9 @@ fun PeersScreen(
                     name = matchedPeer?.displayName ?: "P2P Chat device",
                     peerId = matchedPeer?.peerId ?: endpoint.endpointId,
                     subtitle = when {
-                        connecting -> "Connecting on the direct link — the chat " +
-                            "opens when the identity is verified"
-                        matchedPeer != null -> "Nearby direct link · tap to chat"
-                        else -> "Nearby direct link · tap to connect and chat"
+                        connecting -> "Connecting — the chat opens in a moment"
+                        matchedPeer != null -> "Nearby · tap to chat"
+                        else -> "Tap to chat"
                     },
                     connecting = connecting,
                     onClick = {
@@ -293,10 +293,10 @@ fun PeersScreen(
                 item {
                     Text(
                         text = if (bleTransport?.isBluetoothEnabled() == false) {
-                            "Bluetooth is off — turn it on to discover devices."
+                            "Bluetooth is off — turn it on to find people nearby."
                         } else {
-                            "No P2P Chat devices found yet. Make sure the other " +
-                                "phone has P2P Chat open with Bluetooth on."
+                            "No one found yet. Ask the other person to open " +
+                                "P2P Chat and turn Bluetooth on."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -307,8 +307,8 @@ fun PeersScreen(
         }
 
         Text(
-            text = "Only devices actually discovered around you are listed. " +
-                "A device's name appears once its identity is verified — " +
+            text = "Only people really near you are listed. A name appears " +
+                "once the two phones have safely introduced themselves — " +
                 "nothing here is guessed.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

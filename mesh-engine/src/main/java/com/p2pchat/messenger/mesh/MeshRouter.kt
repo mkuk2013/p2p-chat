@@ -276,7 +276,14 @@ class MeshRouter(
                 val delivered = deliverToMe(envelope)
                 if (delivered) {
                     seenCache.markSeen(envelope.messageId)
-                    if (envelope.type == EnvelopeType.TEXT) sendAck(envelope)
+                    // BLOB chunks are ACKed per chunk, exactly like TEXT:
+                    // the sender counts chunk ACKs to learn when the whole
+                    // blob reached the recipient device.
+                    if (envelope.type == EnvelopeType.TEXT ||
+                        envelope.type == EnvelopeType.BLOB
+                    ) {
+                        sendAck(envelope)
+                    }
                 }
                 // Not delivered (e.g. undecryptable until a key exchange
                 // completes): deliberately left unmarked and un-ACKed, so
@@ -304,7 +311,9 @@ class MeshRouter(
 
     /** @return true if the envelope counts as received by this node. */
     private fun deliverToMe(envelope: MessageEnvelope): Boolean {
-        if (envelope.type == EnvelopeType.TEXT && decryptor != null) {
+        if ((envelope.type == EnvelopeType.TEXT || envelope.type == EnvelopeType.BLOB) &&
+            decryptor != null
+        ) {
             val plaintext = try {
                 decryptor.invoke(envelope)
             } catch (e: Exception) {

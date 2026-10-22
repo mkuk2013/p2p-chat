@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Google Nearby Connections: Wi-Fi state access is a normal
+         (install-time) permission; the dangerous ones are requested at
+         runtime per API level (see NearbyPermissions). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+    <!-- Android 13+ (API 33+): Nearby Wi-Fi discovery permission.
+         Replaces the location requirement on those versions. -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+
+    <!-- Nearby discovery on API 31–32 needs location permission (the
+         Bluetooth runtime permissions live in :transport-ble / the app
+         manifest). This entry has no maxSdkVersion so it covers Nearby
+         on all versions that ask for it; the BLE-only declaration with
+         maxSdkVersion=30 in :transport-ble remains for legacy scans. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+
+</manifest>

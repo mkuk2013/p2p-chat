@@ -46,12 +46,16 @@ class PeerRepository(
                 lastSeenMs = info.lastSeenMs,
                 hopsAway = info.hopsAway
             )
-            if (info.ed25519Public != null && info.x25519Public != null) {
+            // Local vals: PeerInfo's public properties live in another
+            // module, so the compiler cannot smart-cast them directly.
+            val ed25519Public = info.ed25519Public
+            val x25519Public = info.x25519Public
+            if (ed25519Public != null && x25519Public != null) {
                 db.peerDao().upsert(
                     existing.copy(
                         displayName = info.displayName ?: existing.displayName,
-                        ed25519Public = info.ed25519Public,
-                        x25519Public = info.x25519Public,
+                        ed25519Public = ed25519Public,
+                        x25519Public = x25519Public,
                         address = info.address ?: existing.address,
                         lastSeenMs = info.lastSeenMs,
                         hopsAway = info.hopsAway

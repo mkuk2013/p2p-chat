@@ -189,13 +189,13 @@ class MeshForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val text = if (connectedPeers == 1) {
-            "Relaying — 1 peer connected"
+            "Helping nearby chats — 1 person connected"
         } else {
-            "Relaying — $connectedPeers peers connected"
+            "Helping nearby chats — $connectedPeers people connected"
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("P2P Chat mesh relay is on")
+            .setContentTitle("P2P Chat is helping in the background")
             .setContentText(text)
             .setContentIntent(openIntent)
             .setOngoing(true)

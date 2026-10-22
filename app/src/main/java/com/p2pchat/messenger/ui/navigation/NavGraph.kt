@@ -22,7 +22,7 @@ import com.p2pchat.messenger.ble.BlePermissions
 import com.p2pchat.messenger.ui.screens.CallOverlay
 import com.p2pchat.messenger.ui.screens.ChatScreen
 import com.p2pchat.messenger.ui.screens.DeviceChatScreen
-import com.p2pchat.messenger.ui.screens.HomeScreen
+import com.p2pchat.messenger.ui.screens.HomeShellScreen
 import com.p2pchat.messenger.ui.screens.MeshStatusScreen
 import com.p2pchat.messenger.ui.screens.MessageInfoScreen
 import com.p2pchat.messenger.ui.screens.OnboardingScreen
@@ -110,10 +110,13 @@ fun P2PNavGraph(container: AppContainer) {
             if (chatRepository == null) {
                 NeedsIdentity { navController.navigate(Routes.ONBOARDING) }
             } else {
-                HomeScreen(
+                HomeShellScreen(
+                    container = container,
                     chatRepository = chatRepository,
                     onOpenChat = { peerId -> navController.navigate(Routes.chat(peerId)) },
-                    onOpenPeers = { navController.navigate(Routes.PEERS) },
+                    onOpenDeviceChat = { address ->
+                        navController.navigate(Routes.deviceChat(address))
+                    },
                     onOpenMesh = { navController.navigate(Routes.MESH) },
                     onOpenProfile = { navController.navigate(Routes.PROFILE) },
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) }
@@ -220,7 +223,8 @@ fun P2PNavGraph(container: AppContainer) {
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 container = container,
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onOpenMesh = { navController.navigate(Routes.MESH) }
             )
         }
     }
@@ -241,7 +245,7 @@ private fun NeedsIdentity(onGoToSetup: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = "Setting up your identity… if this stays, go back to setup."
+            text = "Getting things ready… if this stays, go back to setup."
         )
     }
     androidx.compose.runtime.LaunchedEffect(Unit) { onGoToSetup() }

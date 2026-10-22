@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -19,6 +21,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,15 +30,20 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.p2pchat.messenger.AppContainer
+import com.p2pchat.messenger.core.transport.LinkTestMath
+import com.p2pchat.messenger.core.transport.LinkTestResult
 import com.p2pchat.messenger.service.MeshForegroundService
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
- * Live mesh network status. Every value comes from the transport's real
- * state flows, the router's [com.p2pchat.messenger.mesh.PeerTable] or the
- * Room outbox — there are no sample peers or invented counts here.
+ * "Connection details": a plain summary first, the connection-speed
+ * check, then the technical truth for troubleshooting (live transport
+ * state, the router's peer table, the Room outbox). Every value comes
+ * from real state — no sample peers or invented counts anywhere.
  */
 @Composable
 fun MeshStatusScreen(
@@ -72,19 +80,43 @@ fun MeshStatusScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹ Back") }
             Text(
-                text = "Mesh network status",
+                text = "Connection details",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
 
+        // Plain summary first — the one line most people need.
+        Text(
+            text = when {
+                !container.isBluetoothEnabled() ->
+                    "Bluetooth is off — turn it on so people nearby can find you."
+                connectedCount > 0 ->
+                    "You are connected to $connectedCount " +
+                        (if (connectedCount == 1) "person" else "people") + " nearby."
+                else ->
+                    "No one is connected right now. Open People and tap " +
+                        "a name to connect."
+            },
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = "The details below are for troubleshooting.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(16.dp))
+
+        LinkSpeedCheck(container = container, transport = transport)
+
+        Spacer(Modifier.height(20.dp))
         StatusRow("Bluetooth", if (container.isBluetoothEnabled()) "On" else "Off")
-        StatusRow("Scanning", if (scanningState?.value == true) "Active" else "Idle")
-        StatusRow("Advertising", if (advertisingState?.value == true) "Active" else "Idle")
-        StatusRow("Connected peers (ready links)", connectedCount.toString())
-        StatusRow("Pending in outbox", outboxPending.toString())
-        StatusRow("Known peers (saved)", knownPeers.size.toString())
+        StatusRow("Looking for people", if (scanningState?.value == true) "Yes" else "No")
+        StatusRow("Visible to others", if (advertisingState?.value == true) "Yes" else "No")
+        StatusRow("Connected now", connectedCount.toString())
+        StatusRow("Messages waiting to send", outboxPending.toString())
+        StatusRow("People you know (saved)", knownPeers.size.toString())
 
         Spacer(Modifier.height(16.dp))
         Row(
@@ -93,12 +125,13 @@ fun MeshStatusScreen(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Background relay",
+                    text = "Help pass messages in the background",
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = "Keep relaying with the screen locked via a foreground " +
-                        "service (visible notification, stop any time).",
+                    text = "Pass other people's messages along even with " +
+                        "the screen locked. Android shows a small notice " +
+                        "while this is on; turn it off any time.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -121,15 +154,16 @@ fun MeshStatusScreen(
 
         Spacer(Modifier.height(20.dp))
         Text(
-            text = "Peer table",
+            text = "Who this phone has heard from",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(6.dp))
         if (tablePeers.isEmpty()) {
             Text(
-                text = "No peers in the table yet. Entries appear when a peer's " +
-                    "identity is read or one of its envelopes passes through this phone.",
+                text = "No one yet. People appear here once your phones " +
+                    "have introduced themselves, or when a message passes " +
+                    "through this phone.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -141,7 +175,7 @@ fun MeshStatusScreen(
                         .padding(vertical = 6.dp)
                 ) {
                     Text(
-                        text = peer.displayName ?: "Peer ${peer.peerId.take(8)}",
+                        text = peer.displayName ?: "P2P Chat user",
                         style = MaterialTheme.typography.bodyLarge
                     )
                     Text(
@@ -163,14 +197,148 @@ fun MeshStatusScreen(
 
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "How to read this: a phone can only ever list peers it really " +
-                "heard. “Hops away 1” is a direct Bluetooth neighbour; larger " +
-                "numbers are senders whose envelopes arrived through relays.",
+            text = "How to read this: a phone can only ever list people it " +
+                "really heard from. “Hops away 1” is someone right next to " +
+                "you; larger numbers are people whose messages arrived " +
+                "through other phones in between.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
+
+/** UI state of the connection-speed check. */
+private sealed interface LinkTestUiState {
+    data object Idle : LinkTestUiState
+    data object Running : LinkTestUiState
+    data object Failed : LinkTestUiState
+    data class Done(val result: LinkTestResult, val peerName: String) : LinkTestUiState
+}
+
+/**
+ * The Bluetooth capability test (master spec §7): real timed test data
+ * over the live link to a connected phone — measured throughput and
+ * round-trip time, plus a plain verdict. When no link is up, the
+ * honest instruction is shown instead of any number.
+ */
+@Composable
+private fun LinkSpeedCheck(
+    container: AppContainer,
+    transport: com.p2pchat.messenger.ble.BleTransport?
+) {
+    val scope = rememberCoroutineScope()
+    var testState by remember { mutableStateOf<LinkTestUiState>(LinkTestUiState.Idle) }
+    val readyAddress = transport?.readyAddresses()?.firstOrNull()
+
+    Text(
+        text = "Connection speed",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = "Sends real test data to a connected phone and times it. " +
+            "Nothing here is guessed.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(8.dp))
+
+    if (transport == null || readyAddress == null) {
+        Text(
+            text = "Connect to a person first — open People nearby, tap " +
+                "their name, then come back.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
+    val peerName = remember(readyAddress) {
+        container.peerTable.all().firstOrNull { it.address == readyAddress }
+            ?.displayName ?: "the connected phone"
+    }
+
+    when (val state = testState) {
+        LinkTestUiState.Idle -> Button(onClick = {
+            testState = LinkTestUiState.Running
+            scope.launch {
+                val result = runCatching { transport.runLinkTest(readyAddress) }
+                    .getOrNull()
+                testState = if (result != null) {
+                    LinkTestUiState.Done(result, peerName)
+                } else {
+                    LinkTestUiState.Failed
+                }
+            }
+        }) { Text("Check connection speed") }
+
+        LinkTestUiState.Running -> Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(
+                modifier = Modifier.padding(end = 12.dp),
+                strokeWidth = 2.dp
+            )
+            Text(
+                text = "Measuring — sending test data to $peerName…",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+
+        LinkTestUiState.Failed -> Column {
+            Text(
+                text = "Couldn't measure — the connection was lost. " +
+                    "Connect again and try once more.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+            TextButton(onClick = { testState = LinkTestUiState.Idle }) {
+                Text("Try again")
+            }
+        }
+
+        is LinkTestUiState.Done -> Column {
+            val result = state.result
+            Text(
+                text = "Speed: ${formatSpeed(result.throughputKBps)}",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "Answer time: about ${result.averageRttMs.roundToInt()} ms",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = when (result.verdict) {
+                    LinkTestMath.VoiceVerdict.VOICE_OK ->
+                        "Voice calls could work on a link like this."
+                    LinkTestMath.VoiceVerdict.TOO_SLOW ->
+                        "Too slow for live voice — voice notes will " +
+                            "still get through."
+                    LinkTestMath.VoiceVerdict.UNSTEADY ->
+                        "Fast enough, but answers come back slowly — " +
+                            "live voice would keep pausing."
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "Video calls need internet — Bluetooth is too " +
+                    "slow for video.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            TextButton(onClick = { testState = LinkTestUiState.Idle }) {
+                Text("Measure again")
+            }
+        }
+    }
+}
+
+private fun formatSpeed(kBps: Double): String =
+    if (kBps >= 1024.0) {
+        String.format(Locale.getDefault(), "%.1f MB/s", kBps / 1024.0)
+    } else {
+        "${kBps.roundToInt()} KB/s"
+    }
 
 @Composable
 private fun StatusRow(label: String, value: String) {

@@ -34,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -130,12 +131,13 @@ fun ChatScreen(
     }
     val bleStatus = bleAddress?.let { bleIdentityStatuses[it] }
     val identityReady = peer != null
+    // One short line a child could read — the technical detail lives
+    // on the Connection details screen, never here.
     val statusText = when {
-        !identityReady && bleStatus?.phase == IdentityPhase.FAILED -> "Connection failed"
+        !identityReady && bleStatus?.phase == IdentityPhase.FAILED -> "Couldn't connect"
         !identityReady -> "Connecting…"
-        directBle || directNearby -> "Nearby · connected"
-        (livePeer?.hopsAway ?: 0) > 1 -> "Relaying via mesh"
-        else -> "Not in range — will deliver when seen"
+        directBle || directNearby -> "Nearby now"
+        else -> "Not nearby"
     }
 
     // Opening the chat IS the connect action; re-kick while unresolved.
@@ -237,8 +239,7 @@ fun ChatScreen(
 
     fun startRecording() {
         if (!identityReady) {
-            sendError = "Wait for the connection — the peer's identity is " +
-                "needed before anything can be sent."
+            sendError = "Still connecting — you can send in a moment."
             return
         }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -260,6 +261,11 @@ fun ChatScreen(
     }
 
     // -- Voice call -------------------------------------------------------
+    // The call button first opens the mode picker (below): the user
+    // chooses how to call and consents to that mode — the app never
+    // switches a call to another mode on its own.
+    var showCallPicker by remember { mutableStateOf(false) }
+
     val callPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -267,27 +273,29 @@ fun ChatScreen(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (micOk && NearbyPermissions.hasAll(context)) {
-            container.callController?.startCall(peerId)
-                ?: run { sendError = "Calls are not ready yet — finish setup first." }
+            if (container.callController != null) {
+                container.startVoiceCall(peerId)
+            } else {
+                sendError = "Calls are not ready yet — finish setup first."
+            }
         } else {
-            sendError = "Voice calls need the microphone and Nearby permissions."
+            sendError = "Voice calls need the microphone permission."
         }
     }
 
-    fun startCall() {
+    fun placeNearbyCall() {
         if (!identityReady) {
-            sendError = "Wait for the identity exchange before calling."
+            sendError = "Still connecting — try the call in a moment."
             return
         }
-        val controller = container.callController
-        if (controller == null) {
+        if (container.callController == null) {
             sendError = "Calls are not ready yet — finish setup first."
             return
         }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED && NearbyPermissions.hasAll(context)
         ) {
-            controller.startCall(peerId)
+            container.startVoiceCall(peerId)
         } else {
             callPermissionLauncher.launch(
                 NearbyPermissions.requiredPermissions() + Manifest.permission.RECORD_AUDIO
@@ -323,10 +331,16 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { startCall() }) {
+                    IconButton(onClick = {
+                        if (!identityReady) {
+                            sendError = "Still connecting — try the call in a moment."
+                        } else {
+                            showCallPicker = true
+                        }
+                    }) {
                         Icon(
                             Icons.Filled.Call,
-                            contentDescription = "Voice call (experimental, direct link)"
+                            contentDescription = "Voice call"
                         )
                     }
                 }
@@ -357,7 +371,7 @@ fun ChatScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Button(onClick = { container.retryBleLinkForPeer(peerId) }) {
-                            Text("Retry")
+                            Text("Try again")
                         }
                     }
                 }
@@ -369,9 +383,8 @@ fun ChatScreen(
                 ) {
                     Text(
                         text = bleStatus?.message
-                            ?: "Connecting to this device — you can type now; " +
-                                "sending unlocks as soon as the identity exchange " +
-                                "completes.",
+                            ?: "Connecting — you can type now. Sending starts " +
+                                "when you are connected.",
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                     )
@@ -509,6 +522,83 @@ fun ChatScreen(
                                 modifier = Modifier.size(22.dp)
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+    // -- Call mode picker: the user picks how to call, every time.
+    // Nearby is the only working mode today; Internet calling needs a
+    // call server (WebRTC) and is shown disabled with the reason —
+    // never faked, never switched to silently.
+    if (showCallPicker) {
+        ModalBottomSheet(onDismissRequest = { showCallPicker = false }) {
+            Column(
+                modifier = Modifier.padding(
+                    start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp
+                )
+            ) {
+                Text(
+                    text = "Call ${peer?.displayName ?: "this person"}",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            showCallPicker = false
+                            placeNearbyCall()
+                        }
+                        .padding(vertical = 10.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Call,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            text = "Nearby call",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Free · works without internet · only " +
+                                "when you are close",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp)
+                ) {
+                    Spacer(Modifier.width(42.dp))
+                    Column {
+                        Text(
+                            text = "Internet call",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Needs internet on both phones",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Coming in the next update — needs a " +
+                                "call server.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }
@@ -773,11 +863,11 @@ private fun VoiceBubble(
 }
 
 internal fun deliveryLabel(state: String): String = when (state) {
-    "QUEUED" -> "Queued"
-    "RELAYED" -> "Relayed (not delivered yet)"
+    "QUEUED" -> "Sending…"
+    "RELAYED" -> "On its way"
     "DELIVERED" -> "Delivered"
-    "EXPIRED" -> "Expired"
-    "FAILED" -> "Failed"
+    "EXPIRED" -> "Not delivered"
+    "FAILED" -> "Not delivered"
     else -> state
 }
 

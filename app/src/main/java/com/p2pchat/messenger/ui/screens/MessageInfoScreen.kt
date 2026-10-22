@@ -82,16 +82,16 @@ fun MessageInfoScreen(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "Queued — the message is stored on this phone and has not " +
-                "been accepted by any other phone yet.\n\n" +
-                "Relayed — a neighbouring phone accepted the encrypted envelope " +
-                "for forwarding. That phone cannot read the message, and its " +
-                "acceptance is NOT delivery.\n\n" +
-                "Delivered — the recipient's own phone returned a signed " +
-                "acknowledgement for this message ID. Only then is a message " +
-                "marked delivered.\n\n" +
-                "Expired — the expiry time passed while the message was still " +
-                "undelivered, so it was dropped from the relay queue.",
+            text = "Sending… — the message is stored on this phone and has " +
+                "not been accepted by any other phone yet.\n\n" +
+                "On its way — a nearby phone accepted the message to pass " +
+                "it along. That phone cannot read it, and this is NOT " +
+                "delivery yet.\n\n" +
+                "Delivered — the other person's own phone confirmed it " +
+                "received this message. Only then is a message marked " +
+                "delivered.\n\n" +
+                "Not delivered — the waiting time ran out while the message " +
+                "was still undelivered.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

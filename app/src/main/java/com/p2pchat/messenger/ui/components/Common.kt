@@ -77,7 +77,7 @@ fun DeliveryTicks(state: String, modifier: Modifier = Modifier, size: Dp = 15.dp
         )
         "RELAYED" -> Icon(
             imageVector = Icons.Filled.Done,
-            contentDescription = "Relayed",
+            contentDescription = "On its way",
             modifier = modifier.size(size),
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -233,6 +233,84 @@ fun SpeakerIcon(tint: Color, modifier: Modifier = Modifier) {
             size = Size(w * 0.34f, h * 0.68f),
             style = Stroke(width = w * 0.07f)
         )
+    }
+}
+
+/** Two-people glyph for the People tab, drawn with Canvas (the
+ *  bundled icon set has no People glyph). */
+@Composable
+fun PeopleIcon(tint: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        // Back person (right, slightly higher).
+        drawCircle(
+            color = tint,
+            radius = w * 0.13f,
+            center = Offset(w * 0.68f, h * 0.30f)
+        )
+        drawArc(
+            color = tint,
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = true,
+            topLeft = Offset(w * 0.47f, h * 0.52f),
+            size = Size(w * 0.42f, h * 0.42f)
+        )
+        // Front person (left).
+        drawCircle(
+            color = tint,
+            radius = w * 0.15f,
+            center = Offset(w * 0.36f, h * 0.34f)
+        )
+        drawArc(
+            color = tint,
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = true,
+            topLeft = Offset(w * 0.10f, h * 0.55f),
+            size = Size(w * 0.52f, h * 0.48f)
+        )
+    }
+}
+
+/**
+ * Call-direction arrow for the Calls tab, drawn with Canvas (no
+ * CallMade / CallReceived / CallMissed glyphs in the bundled set).
+ * Outgoing points up-right; incoming points down-left; [missed] adds
+ * a small cross so a missed incoming call reads at a glance (the
+ * caller also tints it with the error colour, like WhatsApp).
+ */
+@Composable
+fun CallArrowIcon(
+    tint: Color,
+    incoming: Boolean,
+    missed: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.10f
+        val tail = if (incoming) Offset(w * 0.78f, h * 0.22f) else Offset(w * 0.22f, h * 0.78f)
+        val tip = if (incoming) Offset(w * 0.24f, h * 0.76f) else Offset(w * 0.76f, h * 0.24f)
+        drawLine(color = tint, start = tail, end = tip, strokeWidth = stroke)
+        // Arrowhead at the tip.
+        val head = w * 0.30f
+        if (incoming) {
+            drawLine(color = tint, start = tip, end = Offset(tip.x + head, tip.y), strokeWidth = stroke)
+            drawLine(color = tint, start = tip, end = Offset(tip.x, tip.y - head), strokeWidth = stroke)
+        } else {
+            drawLine(color = tint, start = tip, end = Offset(tip.x - head, tip.y), strokeWidth = stroke)
+            drawLine(color = tint, start = tip, end = Offset(tip.x, tip.y + head), strokeWidth = stroke)
+        }
+        if (missed) {
+            val cx = w * 0.72f
+            val cy = h * 0.72f
+            val r = w * 0.13f
+            drawLine(color = tint, start = Offset(cx - r, cy - r), end = Offset(cx + r, cy + r), strokeWidth = stroke * 0.8f)
+            drawLine(color = tint, start = Offset(cx - r, cy + r), end = Offset(cx + r, cy - r), strokeWidth = stroke * 0.8f)
+        }
     }
 }
 

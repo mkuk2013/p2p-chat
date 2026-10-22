@@ -53,9 +53,9 @@ fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
     when (val s = state) {
         is CallState.Idle -> Unit
         is CallState.Linking -> CallSurface(
-            name = s.peerName ?: s.peerId.take(8),
+            name = s.peerName ?: "P2P Chat user",
             peerId = s.peerId,
-            status = "Connecting on the direct link…",
+            status = "Connecting…",
             modifier = modifier
         ) {
             ControlRow {
@@ -63,7 +63,7 @@ fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
             }
         }
         is CallState.Outgoing -> CallSurface(
-            name = s.peerName ?: s.peerId.take(8),
+            name = s.peerName ?: "P2P Chat user",
             peerId = s.peerId,
             status = "Ringing…",
             modifier = modifier
@@ -73,9 +73,9 @@ fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
             }
         }
         is CallState.Incoming -> CallSurface(
-            name = s.peerName ?: s.peerId.take(8),
+            name = s.peerName ?: "P2P Chat user",
             peerId = s.peerId,
-            status = "Incoming voice call",
+            status = "Incoming call",
             modifier = modifier
         ) {
             ControlRow {
@@ -93,7 +93,7 @@ fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
                 }
             }
             CallSurface(
-                name = s.peerName ?: s.peerId.take(8),
+                name = s.peerName ?: "P2P Chat user",
                 peerId = s.peerId,
                 status = formatDuration(nowMs - s.connectedSinceMs),
                 modifier = modifier
@@ -129,17 +129,38 @@ fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
         is CallState.Ended -> AlertDialog(
             onDismissRequest = { controller.dismissTerminal() },
             title = { Text("Call ended") },
-            text = { Text(s.reason) },
+            text = {
+                Text(
+                    com.p2pchat.messenger.core.call.CallReasons.plainReason(s.reason)
+                        ?: "The call is over."
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { controller.dismissTerminal() }) { Text("OK") }
             }
         )
         is CallState.Failed -> AlertDialog(
             onDismissRequest = { controller.dismissTerminal() },
-            title = { Text("Call failed") },
-            text = { Text(s.reason) },
+            title = { Text("Couldn't call") },
+            text = {
+                Text(
+                    com.p2pchat.messenger.core.call.CallReasons.plainReason(s.reason)
+                        ?: "Something went wrong."
+                )
+            },
             confirmButton = {
-                TextButton(onClick = { controller.dismissTerminal() }) { Text("OK") }
+                // Ask, never auto-switch: the only choices are trying
+                // the same nearby call again, or cancelling.
+                val retryPeerId = container.lastCallPeerId()
+                if (retryPeerId != null) {
+                    TextButton(onClick = {
+                        controller.dismissTerminal()
+                        container.startVoiceCall(retryPeerId)
+                    }) { Text("Try again") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { controller.dismissTerminal() }) { Text("Cancel") }
             }
         )
     }
@@ -176,7 +197,7 @@ private fun CallSurface(
         )
         Spacer(Modifier.weight(1f))
         Text(
-            text = "Experimental · direct link only (Nearby) · PCM audio",
+            text = "Nearby call · no internet",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

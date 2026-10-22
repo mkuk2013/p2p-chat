@@ -130,7 +130,7 @@ fun DeviceChatScreen(
                     )
                     Text(
                         text = when {
-                            failed -> "Connection failed"
+                            failed -> "Couldn't connect"
                             status != null -> status.message
                             else -> "Connecting…"
                         },
@@ -153,14 +153,14 @@ fun DeviceChatScreen(
                 ) {
                     Text(
                         text = status?.message
-                            ?: "Could not read this phone's identity. Tap to retry.",
+                            ?: "Couldn't connect to this phone. Tap Try again.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(Modifier.width(8.dp))
                     Button(onClick = { bleTransport?.resetLink(address) }) {
-                        Text("Retry")
+                        Text("Try again")
                     }
                 }
             }
@@ -172,8 +172,8 @@ fun DeviceChatScreen(
             ) {
                 Text(
                     text = status?.message
-                        ?: "Connecting to this device — you can type now; " +
-                            "sending unlocks as soon as the identity exchange completes.",
+                        ?: "Connecting — you can type now. Sending starts " +
+                            "when you are connected.",
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
@@ -190,8 +190,7 @@ fun DeviceChatScreen(
         ) {
             Text(
                 text = "No messages yet.\n" +
-                    "This conversation opens fully as soon as the other " +
-                    "phone's identity is exchanged.",
+                    "Your chat opens fully as soon as you are connected.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

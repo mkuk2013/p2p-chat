@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Base64
 import com.p2pchat.messenger.ble.BleTransport
 import com.p2pchat.messenger.ble.model.ConnState
+import com.p2pchat.messenger.core.call.CallRecordBuilder
 import com.p2pchat.messenger.core.codec.EnvelopeCodec
 import com.p2pchat.messenger.core.model.EnvelopeType
 import com.p2pchat.messenger.core.model.MessageEnvelope
@@ -16,6 +17,7 @@ import com.p2pchat.messenger.data.P2PDatabase
 import com.p2pchat.messenger.data.RoomOutboxStore
 import com.p2pchat.messenger.data.dao.OutboxDao
 import com.p2pchat.messenger.data.entity.OutboxEntity
+import com.p2pchat.messenger.data.repository.CallHistoryRepository
 import com.p2pchat.messenger.data.repository.ChatRepository
 import com.p2pchat.messenger.data.repository.PeerRepository
 import com.p2pchat.messenger.mesh.CompositeMeshTransport
@@ -28,6 +30,7 @@ import com.p2pchat.messenger.mesh.OutboxStore
 import com.p2pchat.messenger.mesh.PeerInfo
 import com.p2pchat.messenger.mesh.PeerTable
 import com.p2pchat.messenger.mesh.QueuedMessage
+import com.p2pchat.messenger.nearby.CallState
 import com.p2pchat.messenger.nearby.NearbyCallController
 import com.p2pchat.messenger.nearby.NearbyPermissions
 import com.p2pchat.messenger.nearby.NearbyTransport
@@ -115,6 +118,7 @@ class AppContainer(context: Context) {
     val identityStore: IdentityStore = IdentityStore(appContext)
 
     val peerRepository: PeerRepository = PeerRepository(database)
+    val callHistoryRepository: CallHistoryRepository = CallHistoryRepository(database)
     val peerTable: PeerTable = PeerTable()
 
     /** Room-backed store-and-forward queue handed to the mesh router. */
@@ -240,6 +244,7 @@ class AppContainer(context: Context) {
         database.seenDao().clearAll()
         database.voiceTransferDao().clearAll()
         database.voiceChunkDao().clearAll()
+        database.callRecordDao().clearAll()
         runCatching { voiceDir.deleteRecursively() }
         // TODO(contract): PeerDao has no clearAll(); delete row by row.
         peerRepository.peers.first().forEach { database.peerDao().deleteById(it.peerId) }
@@ -296,6 +301,80 @@ class AppContainer(context: Context) {
 
     fun isNearbyConnected(peerId: String): Boolean = peerId in nearbyBoundPeerIds()
 
+    // ------------------------------------------------------------ calls
+
+    @Volatile
+    private var _lastCallPeerId: String? = null
+
+    /** The peer of the most recent outgoing call attempt — the call
+     *  screen's "Try again" button dials this. Null before any call. */
+    fun lastCallPeerId(): String? = _lastCallPeerId
+
+    /** Start an outgoing nearby call, remembering the peer so a failed
+     *  call can be retried (and instantly-failed attempts can still be
+     *  written to the call history with the right peer). */
+    fun startVoiceCall(peerId: String) {
+        _lastCallPeerId = peerId
+        _callController?.startCall(peerId)
+    }
+
+    /**
+     * Call history recorder: feeds every call-state transition into a
+     * [CallRecordBuilder] and persists exactly one row per attempt.
+     * The builder (core-common, unit-tested) owns the outcome logic;
+     * this collector only translates states and stores the result.
+     * A Failed state with no attempt in flight can still be a real
+     * attempt — startCall fails instantly when Play services is
+     * missing, before any Linking state — so it is attributed to
+     * [lastCallPeerId] when known.
+     */
+    private fun startCallRecorder(callController: NearbyCallController) {
+        val builder = CallRecordBuilder()
+        appScope.launch {
+            var previous: CallState = CallState.Idle
+            callController.state.collect { state ->
+                val now = System.currentTimeMillis()
+                fun nameOf(peerId: String, stateName: String?): String? =
+                    stateName ?: peerTable.get(peerId)?.displayName
+                fun persist(rawReason: String?) {
+                    val draft = builder.onFinished(rawReason, System.currentTimeMillis())
+                    if (draft != null) {
+                        appScope.launch { runCatching { callHistoryRepository.record(draft) } }
+                    }
+                }
+                when (state) {
+                    is CallState.Linking ->
+                        builder.onOutgoingStarted(state.peerId, nameOf(state.peerId, state.peerName), now)
+                    is CallState.Outgoing ->
+                        builder.onOutgoingStarted(state.peerId, nameOf(state.peerId, state.peerName), now)
+                    is CallState.Incoming ->
+                        builder.onIncomingStarted(state.peerId, nameOf(state.peerId, state.peerName), now)
+                    is CallState.Active ->
+                        builder.onAnswered(state.connectedSinceMs)
+                    is CallState.Ended -> persist(state.reason)
+                    is CallState.Failed -> {
+                        if (!builder.inProgress) {
+                            _lastCallPeerId?.let { peerId ->
+                                builder.onOutgoingStarted(peerId, nameOf(peerId, null), now)
+                            }
+                        }
+                        persist(state.reason)
+                    }
+                    CallState.Idle -> {
+                        if (previous is CallState.Incoming) {
+                            // reject() goes straight to Idle.
+                            builder.onRejectedByMe()
+                            persist(null)
+                        } else if (builder.inProgress) {
+                            persist(null)
+                        }
+                    }
+                }
+                previous = state
+            }
+        }
+    }
+
     // ------------------------------------------------------------ wiring
 
     private fun wireIdentity(identity: Identity) {
@@ -332,6 +411,7 @@ class AppContainer(context: Context) {
             scope = appScope
         )
         _callController = callController
+        startCallRecorder(callController)
 
         // Sends fan out: Nearby direct link first (fast, when bound +
         // connected), then the BLE mesh (relays, always the fallback).

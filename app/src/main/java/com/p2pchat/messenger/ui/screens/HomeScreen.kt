@@ -96,7 +96,7 @@ fun HomeScreen(
                             onDismissRequest = { menuOpen = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Mesh status") },
+                                text = { Text("Connection details") },
                                 onClick = { menuOpen = false; onOpenMesh() }
                             )
                             DropdownMenuItem(

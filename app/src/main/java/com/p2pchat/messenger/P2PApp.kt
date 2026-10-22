@@ -273,10 +273,25 @@ class AppContainer(context: Context) {
         }
         val nearby = _nearbyTransport ?: return
         if (!nearby.available || !NearbyPermissions.hasAll(appContext)) return
+        // Wanted: the transport now connects whenever discovery finds
+        // this peer and retries failed attempts on its own — the old
+        // one-shot lookup raced discovery and silently gave up, which
+        // is why calls placed from a fresh app start never got through.
+        nearby.wantPeer(peerId)
         nearby.start()
         nearby.endpointByHint(NearbyTransport.identityHint(peerId))?.let { endpoint ->
             nearby.connect(endpoint.endpointId)
         }
+    }
+
+    /** Start Nearby listening (advertising + discovery) when the
+     *  permissions are in place. Called at wiring time and again after
+     *  the user grants permissions, so this phone can RECEIVE messages
+     *  and calls without first opening a chat (v1.2.1). */
+    fun ensureNearbyStarted() {
+        val nearby = _nearbyTransport ?: return
+        if (!nearby.available || !NearbyPermissions.hasAll(appContext)) return
+        runCatching { nearby.start() }
     }
 
     /** BLE address last associated with [peerId], if any (never a
@@ -400,6 +415,14 @@ class AppContainer(context: Context) {
             _identity.value?.let { IdentityPayloadCodec.encode(it) } ?: ByteArray(0)
         }
         _nearbyTransport = nearby
+        // Listen from the start (v1.2.1): with permissions granted this
+        // phone advertises + discovers right away, so calls and messages
+        // can ARRIVE without the user first opening a chat or placing a
+        // call. Before this, Nearby only started from those two places —
+        // an incoming call could never ring a phone that hadn't.
+        if (NearbyPermissions.hasAll(appContext)) {
+            runCatching { nearby.start() }
+        }
 
         val callController = NearbyCallController(
             context = appContext,

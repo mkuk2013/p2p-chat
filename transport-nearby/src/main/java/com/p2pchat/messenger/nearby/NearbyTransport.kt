@@ -1,6 +1,8 @@
 package com.p2pchat.messenger.nearby
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
@@ -123,12 +125,52 @@ class NearbyTransport(
     @Volatile
     private var started = false
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Peers the app wants a direct link to, by identity hint. A wanted
+     * peer is connected automatically whenever discovery finds it, and
+     * failed attempts retry — nobody has to be staring at the right
+     * screen at the right second for a link (or a call) to get through.
+     */
+    private val wantedHints = mutableListOf<ByteArray>()
+    private val connectAttempts = mutableMapOf<String, Int>()
+
+    /** Mark [peerId] as wanted and connect now if it is already found. */
+    fun wantPeer(peerId: String) {
+        val hint = identityHint(peerId)
+        if (wantedHints.none { it.contentEquals(hint) }) wantedHints.add(hint)
+        _endpoints.value
+            .firstOrNull { it.hint?.contentEquals(hint) == true }
+            ?.let { tryConnect(it.endpointId) }
+    }
+
+    private fun tryConnect(endpointId: String) {
+        val state = _sessions.value[endpointId]
+        if (state == NearbyLinkState.CONNECTED || state == NearbyLinkState.CONNECTING) return
+        val attempts = connectAttempts.getOrDefault(endpointId, 0)
+        if (attempts >= MAX_CONNECT_ATTEMPTS) return
+        connectAttempts[endpointId] = attempts + 1
+        connect(endpointId)
+    }
+
+    private fun scheduleRetry(endpointId: String) {
+        val ep = _endpoints.value.firstOrNull { it.endpointId == endpointId } ?: return
+        val hint = ep.hint ?: return
+        if (wantedHints.none { it.contentEquals(hint) }) return
+        if (connectAttempts.getOrDefault(endpointId, 0) >= MAX_CONNECT_ATTEMPTS) return
+        mainHandler.postDelayed({ tryConnect(endpointId) }, RETRY_DELAY_MS)
+    }
+
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val hint = decodeHint(info.endpointName)
             _endpoints.update { list ->
                 list.filterNot { it.endpointId == endpointId } +
                     NearbyEndpoint(endpointId, info.endpointName, hint)
+            }
+            if (hint != null && wantedHints.any { it.contentEquals(hint) }) {
+                tryConnect(endpointId)
             }
         }
 
@@ -174,6 +216,7 @@ class NearbyTransport(
 
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
             if (resolution.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
+                connectAttempts.remove(endpointId)
                 setSession(endpointId, NearbyLinkState.CONNECTED)
                 // Same as BLE: first thing on a fresh link is our identity.
                 runCatching { identityPayloadProvider() }.getOrNull()?.let { identity ->
@@ -182,11 +225,13 @@ class NearbyTransport(
             } else {
                 Log.w(TAG, "connection to $endpointId failed: ${resolution.status.statusCode}")
                 setSession(endpointId, NearbyLinkState.FAILED)
+                scheduleRetry(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
             setSession(endpointId, NearbyLinkState.DISCONNECTED)
+            scheduleRetry(endpointId)
         }
     }
 
@@ -237,7 +282,11 @@ class NearbyTransport(
                 // other side also needs to be advertising; discovery gives
                 // us endpoints that are, so a failure here is terminal for
                 // this attempt and is surfaced via the session state.
+                // Wanted peers get retried (scheduleRetry) — simultaneous
+                // connects from both sides collide here and resolve on
+                // the retry, when the other side's link is already up.
                 setSession(endpointId, NearbyLinkState.FAILED)
+                scheduleRetry(endpointId)
             }
     }
 
@@ -298,6 +347,8 @@ class NearbyTransport(
         const val SERVICE_ID = "com.p2pchat.messenger.NEARBY"
         const val NAME_PREFIX = "P2PChat-"
         const val MAX_BYTES_PAYLOAD = 32_768
+        const val MAX_CONNECT_ATTEMPTS = 6
+        const val RETRY_DELAY_MS = 2_500L
 
         /** Same 8-byte identity hint as the BLE advertisements:
          *  first 8 bytes of SHA-256(peerId). */

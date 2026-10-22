@@ -1,5 +1,9 @@
 package com.p2pchat.messenger.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,7 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.p2pchat.messenger.AppContainer
 import com.p2pchat.messenger.nearby.CallState
 import com.p2pchat.messenger.ui.components.MicIcon
@@ -49,6 +55,23 @@ import kotlinx.coroutines.delay
 fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
     val controller = container.callController ?: return
     val state by controller.state.collectAsState()
+
+    // Answering needs the microphone too (v1.2.1): ask at the tap, not
+    // after — before, a phone without the permission accepted the call
+    // and then failed it from the inside.
+    val context = LocalContext.current
+    val acceptMicLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) controller.accept() }
+    fun acceptWithMic() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            controller.accept()
+        } else {
+            acceptMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     when (val s = state) {
         is CallState.Idle -> Unit
@@ -81,7 +104,7 @@ fun CallOverlay(container: AppContainer, modifier: Modifier = Modifier) {
             ControlRow {
                 DeclineButton(onClick = { controller.reject() })
                 Spacer(Modifier.size(48.dp))
-                AcceptButton(onClick = { controller.accept() })
+                AcceptButton(onClick = { acceptWithMic() })
             }
         }
         is CallState.Active -> {

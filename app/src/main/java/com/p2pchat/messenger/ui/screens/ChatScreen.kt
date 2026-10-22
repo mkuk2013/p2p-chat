@@ -274,6 +274,9 @@ fun ChatScreen(
             PackageManager.PERMISSION_GRANTED
         if (micOk && NearbyPermissions.hasAll(context)) {
             if (container.callController != null) {
+                // Permissions just landed: start listening too, so this
+                // phone can also RECEIVE calls from now on.
+                container.ensureNearbyStarted()
                 container.startVoiceCall(peerId)
             } else {
                 sendError = "Calls are not ready yet — finish setup first."
@@ -284,10 +287,10 @@ fun ChatScreen(
     }
 
     fun placeNearbyCall() {
-        if (!identityReady) {
-            sendError = "Still connecting — try the call in a moment."
-            return
-        }
+        // No identityReady gate (v1.2.1): the chat flag could leave the
+        // call button silently doing nothing on a phone whose BLE
+        // identity exchange was still pending, even though the call
+        // itself binds identity over its own link while "Connecting…".
         if (container.callController == null) {
             sendError = "Calls are not ready yet — finish setup first."
             return
@@ -295,6 +298,7 @@ fun ChatScreen(
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED && NearbyPermissions.hasAll(context)
         ) {
+            container.ensureNearbyStarted()
             container.startVoiceCall(peerId)
         } else {
             callPermissionLauncher.launch(

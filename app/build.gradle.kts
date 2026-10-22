@@ -28,8 +28,8 @@ android {
         applicationId = "com.p2pchat.messenger"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.2.0"
+        versionCode = 8
+        versionName = "1.2.1"
         vectorDrawables { useSupportLibrary = true }
     }
 

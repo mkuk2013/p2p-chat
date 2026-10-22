@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.p2pchat.messenger.R
 import com.p2pchat.messenger.ble.BlePermissions
+import com.p2pchat.messenger.nearby.NearbyPermissions
 
 /**
  * First-launch setup in three short steps, in plain words:
@@ -99,7 +100,12 @@ fun OnboardingScreen(
     val allReady = needsReady && hasIdentity
 
     fun requestPermissions() {
-        val toRequest = BlePermissions.requiredPermissions().toMutableList()
+        // BLE + Nearby sets together (v1.2.1): the Nearby permissions
+        // are what let this phone listen for incoming direct links and
+        // calls from the very first launch, not only after its first
+        // outgoing call.
+        val toRequest = (BlePermissions.requiredPermissions() +
+            NearbyPermissions.requiredPermissions()).distinct().toMutableList()
         if (notificationsApplicable) {
             // Needed to show the background-help notice on API 33+.
             toRequest += Manifest.permission.POST_NOTIFICATIONS

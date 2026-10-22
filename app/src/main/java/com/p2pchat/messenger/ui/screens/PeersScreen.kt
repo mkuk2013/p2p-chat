@@ -47,10 +47,12 @@ import kotlinx.coroutines.launch
 
 /**
  * "Select contact" (WhatsApp's New Chat screen): known peers on top,
- * live-discovered devices below. There is NO separate Connect step —
- * tapping any row starts connecting in the background and opens the chat
- * as soon as the peer's identity is known (immediately for known peers).
- * Only devices actually discovered around the user are ever listed.
+ * live-discovered devices below. There is NO separate Connect step and
+ * NO waiting room — tapping a known peer opens its chat immediately,
+ * and tapping an undiscovered device opens its device chat immediately
+ * while connecting + identity exchange proceed inside it (bounded, with
+ * a truthful failure state and retry). Only devices actually
+ * discovered around the user are ever listed.
  */
 @Composable
 fun PeersScreen(
@@ -59,6 +61,7 @@ fun PeersScreen(
     chatRepository: ChatRepository?,
     peerRepository: PeerRepository,
     onOpenChat: (String) -> Unit,
+    onOpenDeviceChat: (String) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -90,6 +93,9 @@ fun PeersScreen(
     val bleConnections by (bleTransport?.connections
         ?: kotlinx.coroutines.flow.flowOf(emptyMap()))
         .collectAsState(initial = emptyMap())
+    val bleIdentityStatuses by (bleTransport?.identityStatus
+        ?: kotlinx.coroutines.flow.flowOf(emptyMap()))
+        .collectAsState(initial = emptyMap())
     val isScanning by (bleTransport?.isScanning ?: kotlinx.coroutines.flow.flowOf(false))
         .collectAsState(initial = false)
     val nearbyEndpoints by (nearbyTransport?.endpoints
@@ -99,9 +105,10 @@ fun PeersScreen(
         ?: kotlinx.coroutines.flow.flowOf(emptyMap()))
         .collectAsState(initial = emptyMap())
 
-    // A first-contact connect in flight: which row is waiting for its
-    // identity exchange to complete so the chat can open.
-    var connectingBleAddress by remember { mutableStateOf<String?>(null) }
+    // A first-contact Nearby connect in flight: which row is waiting
+    // for its identity exchange to complete so the chat can open.
+    // (BLE first contact no longer waits here at all — tapping a BLE
+    // device opens its device chat immediately; see the row below.)
     var connectingEndpointId by remember { mutableStateOf<String?>(null) }
     var knownIdsAtConnectStart by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -111,16 +118,6 @@ fun PeersScreen(
             chatRepository.ensureConversation(peerId, displayName)
             onOpenChat(peerId)
         }
-    }
-
-    // BLE first contact: once the connecting device's identity resolves,
-    // jump straight into its chat.
-    LaunchedEffect(blePeers, connectingBleAddress) {
-        val address = connectingBleAddress ?: return@LaunchedEffect
-        val peer = blePeers.firstOrNull { it.deviceAddress == address } ?: return@LaunchedEffect
-        val resolved = peer.peerId ?: return@LaunchedEffect
-        connectingBleAddress = null
-        openChat(resolved, peer.displayName ?: resolved.take(8))
     }
 
     // Nearby first contact: the peer lands in the known-peers table when
@@ -223,16 +220,22 @@ fun PeersScreen(
             val freshBle = blePeers.filter { it.peerId == null || it.peerId !in knownIds }
             items(freshBle, key = { "ble-${it.deviceAddress}" }) { peer ->
                 val state = bleConnections[peer.deviceAddress] ?: ConnState.DISCONNECTED
-                val connecting = connectingBleAddress == peer.deviceAddress ||
-                    state == ConnState.CONNECTING || state == ConnState.DISCOVERING
+                val linkStatus = bleIdentityStatuses[peer.deviceAddress]
+                val linkFailed = linkStatus?.phase ==
+                    com.p2pchat.messenger.ble.model.IdentityPhase.FAILED
+                val connecting = !linkFailed &&
+                    (linkStatus?.phase ==
+                        com.p2pchat.messenger.ble.model.IdentityPhase.RESOLVING ||
+                        state == ConnState.CONNECTING || state == ConnState.DISCOVERING)
                 ContactRow(
                     name = peer.displayName
                         ?: peer.peerId?.let { "Peer ${it.take(8)}" }
                         ?: "P2P Chat device",
                     peerId = peer.peerId ?: peer.deviceAddress,
                     subtitle = when {
-                        connecting -> "Connecting — the chat opens as soon as " +
-                            "the identity is read"
+                        // The bounded resolver's own words — including
+                        // the failure reason once the budget is spent.
+                        linkStatus != null && peer.peerId == null -> linkStatus.message
                         peer.peerId != null -> "In range · tap to chat"
                         else -> "Bluetooth · signal ${peer.rssi} dBm · tap to " +
                             "connect and chat"
@@ -243,8 +246,12 @@ fun PeersScreen(
                         if (resolved != null) {
                             openChat(resolved, peer.displayName ?: resolved.take(8))
                         } else if (bleTransport != null && peer.connectable) {
-                            connectingBleAddress = peer.deviceAddress
+                            // Chat opens FIRST (never a waiting room):
+                            // connect in the background; the exchange
+                            // continues inside the device chat under
+                            // the bounded resolver.
                             bleTransport.connect(peer.deviceAddress)
+                            onOpenDeviceChat(peer.deviceAddress)
                         }
                     }
                 )

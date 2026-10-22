@@ -21,6 +21,7 @@ import com.p2pchat.messenger.AppContainer
 import com.p2pchat.messenger.ble.BlePermissions
 import com.p2pchat.messenger.ui.screens.CallOverlay
 import com.p2pchat.messenger.ui.screens.ChatScreen
+import com.p2pchat.messenger.ui.screens.DeviceChatScreen
 import com.p2pchat.messenger.ui.screens.HomeScreen
 import com.p2pchat.messenger.ui.screens.MeshStatusScreen
 import com.p2pchat.messenger.ui.screens.MessageInfoScreen
@@ -37,6 +38,7 @@ object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
     const val CHAT = "chat/{peerId}"
+    const val DEVICE_CHAT = "deviceChat/{address}"
     const val PEERS = "peers"
     const val MESH = "mesh"
     const val MESSAGE_INFO = "messageInfo/{messageId}"
@@ -44,6 +46,12 @@ object Routes {
     const val SETTINGS = "settings"
 
     fun chat(peerId: String): String = "chat/$peerId"
+
+    /** First-contact chat keyed by BLE address (the peerId does not
+     * exist until the identity exchange completes). The address is
+     * URI-encoded (it contains ':' separators). */
+    fun deviceChat(address: String): String =
+        "deviceChat/${android.net.Uri.encode(address)}"
     fun messageInfo(messageId: String): String = "messageInfo/$messageId"
 }
 
@@ -135,6 +143,28 @@ fun P2PNavGraph(container: AppContainer) {
             }
         }
 
+        composable(
+            route = Routes.DEVICE_CHAT,
+            arguments = listOf(navArgument("address") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val address = backStackEntry.arguments?.getString("address").orEmpty()
+            val chatRepository = container.chatRepository
+            if (chatRepository == null) {
+                NeedsIdentity { navController.navigate(Routes.ONBOARDING) }
+            } else {
+                DeviceChatScreen(
+                    address = address,
+                    container = container,
+                    chatRepository = chatRepository,
+                    peerRepository = container.peerRepository,
+                    onMessageInfo = { messageId ->
+                        navController.navigate(Routes.messageInfo(messageId))
+                    },
+                    onBack = { navController.popBackStack() }
+                )
+            }
+        }
+
         composable(Routes.PEERS) {
             PeersScreen(
                 container = container,
@@ -142,6 +172,9 @@ fun P2PNavGraph(container: AppContainer) {
                 chatRepository = container.chatRepository,
                 peerRepository = container.peerRepository,
                 onOpenChat = { peerId -> navController.navigate(Routes.chat(peerId)) },
+                onOpenDeviceChat = { address ->
+                    navController.navigate(Routes.deviceChat(address))
+                },
                 onBack = { navController.popBackStack() }
             )
         }

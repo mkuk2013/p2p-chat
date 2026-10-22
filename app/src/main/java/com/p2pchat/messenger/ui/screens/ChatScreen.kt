@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.p2pchat.messenger.AppContainer
+import com.p2pchat.messenger.ble.model.IdentityPhase
 import com.p2pchat.messenger.data.entity.MessageEntity
 import com.p2pchat.messenger.data.entity.VoiceTransferEntity
 import com.p2pchat.messenger.data.repository.ChatRepository
@@ -93,7 +95,9 @@ fun ChatScreen(
     peerRepository: PeerRepository,
     onMessageInfo: (String) -> Unit,
     onBack: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Text typed on the pre-identity device chat screen, carried over. */
+    initialDraft: String = ""
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -117,8 +121,17 @@ fun ChatScreen(
     val livePeer = remember(messages.size, bleConnections, nearbySessions, peerId) {
         container.peerTable.get(peerId)
     }
+    // Identity-exchange diagnostics for this peer's BLE link (plain
+    // words from the transport's bounded resolver).
+    val bleIdentityStatuses by (container.bleTransport?.identityStatus ?: flowOf(emptyMap()))
+        .collectAsState(initial = emptyMap())
+    val bleAddress = remember(peerId, bleIdentityStatuses) {
+        container.bleAddressForPeer(peerId)
+    }
+    val bleStatus = bleAddress?.let { bleIdentityStatuses[it] }
     val identityReady = peer != null
     val statusText = when {
+        !identityReady && bleStatus?.phase == IdentityPhase.FAILED -> "Connection failed"
         !identityReady -> "Connecting…"
         directBle || directNearby -> "Nearby · connected"
         (livePeer?.hopsAway ?: 0) > 1 -> "Relaying via mesh"
@@ -126,6 +139,9 @@ fun ChatScreen(
     }
 
     // Opening the chat IS the connect action; re-kick while unresolved.
+    // A FAILED identity exchange is NOT auto-re-kicked: the bounded
+    // resolver already spent its budget (including a full link reset),
+    // so recovery is the user's explicit retry — no reset storms.
     LaunchedEffect(peerId) {
         container.startDirectLink(peerId)
         while (true) {
@@ -133,7 +149,12 @@ fun ChatScreen(
             // peer is a State snapshot inside this effect's first frame;
             // read the table instead for liveness.
             if (container.peerTable.get(peerId) == null) {
-                container.startDirectLink(peerId)
+                val phase = container.bleAddressForPeer(peerId)?.let { addr ->
+                    container.bleTransport?.identityStatus?.value?.get(addr)?.phase
+                }
+                if (phase != IdentityPhase.FAILED) {
+                    container.startDirectLink(peerId)
+                }
             }
         }
     }
@@ -142,7 +163,7 @@ fun ChatScreen(
         if (messages.isNotEmpty()) chatRepository.markConversationRead(peerId)
     }
 
-    var draft by remember { mutableStateOf("") }
+    var draft by remember(peerId) { mutableStateOf(initialDraft) }
     var sendError by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
@@ -317,16 +338,40 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (!identityReady) {
+            if (!identityReady && bleStatus?.phase == IdentityPhase.FAILED) {
+                // Bounded exchange exhausted: truthful reason + retry.
+                // The retry is a FULL link reset, not a bare re-read.
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = bleStatus.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = { container.retryBleLinkForPeer(peerId) }) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            } else if (!identityReady) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Connecting to this device — you can type now; " +
-                            "sending unlocks as soon as the identity exchange " +
-                            "completes.",
+                        text = bleStatus?.message
+                            ?: "Connecting to this device — you can type now; " +
+                                "sending unlocks as soon as the identity exchange " +
+                                "completes.",
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                     )

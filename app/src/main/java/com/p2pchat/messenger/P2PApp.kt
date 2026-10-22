@@ -274,6 +274,20 @@ class AppContainer(context: Context) {
         }
     }
 
+    /** BLE address last associated with [peerId], if any (never a
+     * Nearby pseudo-address). */
+    fun bleAddressForPeer(peerId: String): String? =
+        addressByPeerId[peerId]
+            ?: peerTable.get(peerId)?.address?.takeUnless { it.startsWith(NEARBY_ADDRESS_PREFIX) }
+
+    /** User-initiated retry after a failed BLE identity exchange: a
+     * full link reset + fresh connect (see BleTransport.resetLink). */
+    fun retryBleLinkForPeer(peerId: String) {
+        val transport = _bleTransport ?: return
+        val address = bleAddressForPeer(peerId) ?: return
+        runCatching { transport.resetLink(address) }
+    }
+
     /** Peers with an identity-bound, connected Nearby session right now. */
     fun nearbyBoundPeerIds(): Set<String> {
         val nearby = _nearbyTransport ?: return emptySet()
@@ -291,6 +305,12 @@ class AppContainer(context: Context) {
         val transport = BleTransport(appContext, identity.peerId) {
             // IDENTITY characteristic payload, read live so renames apply.
             _identity.value?.let { IdentityPayloadCodec.encode(it) } ?: ByteArray(0)
+        }
+        // Link diagnostics (identity read retries, collisions, resets)
+        // join the crash-report breadcrumb trail, so a field report
+        // carries the exact event sequence that led to it.
+        transport.diagnosticsListener = { message ->
+            CrashReporter.breadcrumb(appContext, message)
         }
         _bleTransport = transport
 

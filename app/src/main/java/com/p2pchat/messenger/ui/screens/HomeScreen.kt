@@ -14,14 +14,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -37,14 +44,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.p2pchat.messenger.R
 import com.p2pchat.messenger.data.repository.ChatRepository
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.p2pchat.messenger.ui.components.ChatBubbleIcon
+import com.p2pchat.messenger.ui.components.DeliveryTicks
+import com.p2pchat.messenger.ui.components.PeerAvatar
+import com.p2pchat.messenger.ui.components.formatChatListTime
 
 /**
- * Recent conversations, straight from Room via [ChatRepository]. Search
- * filters by peer display name (and message preview, per the DAO query).
- * No sample data is ever shown: an empty database is an empty list.
+ * HOME = Chats (WhatsApp layout). Conversations come straight from Room
+ * via [ChatRepository] — no sample data ever; an empty database is an
+ * honest empty state. The floating button opens the Select-contact
+ * (Nearby) screen; Mesh / Profile / Settings live in the overflow menu.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +67,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     var query by remember { mutableStateOf("") }
+    var menuOpen by remember { mutableStateOf(false) }
     val conversations by remember(query) { chatRepository.searchConversations(query) }
         .collectAsState(initial = emptyList())
 
@@ -77,15 +87,41 @@ fun HomeScreen(
                     }
                 },
                 actions = {
-                    TextButton(onClick = onOpenMesh) { Text("Mesh") }
-                    TextButton(onClick = onOpenProfile) { Text("Profile") }
-                    TextButton(onClick = onOpenSettings) { Text("Settings") }
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Mesh status") },
+                                onClick = { menuOpen = false; onOpenMesh() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("My profile") },
+                                onClick = { menuOpen = false; onOpenProfile() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Settings") },
+                                onClick = { menuOpen = false; onOpenSettings() }
+                            )
+                        }
+                    }
                 }
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = onOpenPeers) {
-                Text("Nearby peers")
+            FloatingActionButton(
+                onClick = onOpenPeers,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ) {
+                ChatBubbleIcon(
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(26.dp)
+                )
             }
         }
     ) { padding ->
@@ -97,8 +133,10 @@ fun HomeScreen(
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = { Text("Search conversations") },
+                placeholder = { Text("Search") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
+                shape = RoundedCornerShape(24.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -112,8 +150,8 @@ fun HomeScreen(
                 ) {
                     Text(
                         text = if (query.isBlank()) {
-                            "No conversations yet — open Nearby Peers to find " +
-                                "someone around you and start chatting."
+                            "No conversations yet — tap the message button " +
+                                "to find someone nearby and start chatting."
                         } else {
                             "No conversations match \"$query\"."
                         },
@@ -128,9 +166,14 @@ fun HomeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onOpenChat(conversation.peerId) }
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            PeerAvatar(
+                                name = conversation.displayName,
+                                peerId = conversation.peerId
+                            )
+                            Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = conversation.displayName,
@@ -144,25 +187,45 @@ fun HomeScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = conversation.lastMessagePreview,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (conversation.lastMessageMine) {
+                                        conversation.lastMessageState?.let { state ->
+                                            DeliveryTicks(state = state, size = 14.dp)
+                                            Spacer(Modifier.width(4.dp))
+                                        }
+                                    }
+                                    Text(
+                                        text = conversation.lastMessagePreview,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 if (conversation.lastMessageMs > 0) {
                                     Text(
-                                        text = formatListTime(conversation.lastMessageMs),
+                                        text = formatChatListTime(conversation.lastMessageMs),
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (conversation.unreadCount > 0) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        fontWeight = if (conversation.unreadCount > 0) {
+                                            FontWeight.Bold
+                                        } else {
+                                            FontWeight.Normal
+                                        }
                                     )
                                 }
                                 if (conversation.unreadCount > 0) {
                                     Spacer(Modifier.height(4.dp))
-                                    Badge {
+                                    Badge(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ) {
                                         Text(conversation.unreadCount.toString())
                                     }
                                 }
@@ -173,10 +236,4 @@ fun HomeScreen(
             }
         }
     }
-}
-
-private fun formatListTime(timestampMs: Long): String {
-    val now = System.currentTimeMillis()
-    val pattern = if (now - timestampMs < 24L * 60 * 60 * 1000) "HH:mm" else "dd MMM"
-    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(timestampMs))
 }

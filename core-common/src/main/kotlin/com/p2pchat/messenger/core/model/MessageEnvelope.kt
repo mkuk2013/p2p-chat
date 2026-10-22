@@ -6,7 +6,7 @@ package com.p2pchat.messenger.core.model
  * (see :core-crypto). [signature] is an Ed25519 signature by [senderId]
  * over the codec serialization of this envelope with signature emptied.
  */
-enum class EnvelopeType { TEXT, ACK, PING, KEY_EXCHANGE }
+enum class EnvelopeType { TEXT, ACK, PING, KEY_EXCHANGE, BLOB }
 
 class MessageEnvelope(
     val version: Int = PROTOCOL_VERSION,

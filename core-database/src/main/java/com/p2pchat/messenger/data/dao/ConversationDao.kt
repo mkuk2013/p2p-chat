@@ -26,6 +26,15 @@ interface ConversationDao {
     @Query("UPDATE conversations SET unreadCount = 0 WHERE peerId = :peerId")
     suspend fun clearUnread(peerId: String)
 
+    /** Sync the chats-list tick state when the latest message's delivery
+     * state changes (guarded by [messageId] so stale updates for older
+     * messages never overwrite a newer preview). */
+    @Query(
+        "UPDATE conversations SET lastMessageState = :state " +
+            "WHERE peerId = :peerId AND lastMessageId = :messageId"
+    )
+    suspend fun updateLastMessageState(peerId: String, messageId: String, state: String)
+
     @Query("UPDATE conversations SET unreadCount = unreadCount + 1 WHERE peerId = :peerId")
     suspend fun incrementUnread(peerId: String)
 

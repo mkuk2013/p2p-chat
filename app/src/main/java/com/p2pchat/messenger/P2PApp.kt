@@ -18,6 +18,7 @@ import com.p2pchat.messenger.data.dao.OutboxDao
 import com.p2pchat.messenger.data.entity.OutboxEntity
 import com.p2pchat.messenger.data.repository.ChatRepository
 import com.p2pchat.messenger.data.repository.PeerRepository
+import com.p2pchat.messenger.mesh.CompositeMeshTransport
 import com.p2pchat.messenger.mesh.DeliveryState
 import com.p2pchat.messenger.mesh.MeshEvent
 import com.p2pchat.messenger.mesh.MeshRouter
@@ -27,6 +28,10 @@ import com.p2pchat.messenger.mesh.OutboxStore
 import com.p2pchat.messenger.mesh.PeerInfo
 import com.p2pchat.messenger.mesh.PeerTable
 import com.p2pchat.messenger.mesh.QueuedMessage
+import com.p2pchat.messenger.nearby.NearbyCallController
+import com.p2pchat.messenger.nearby.NearbyPermissions
+import com.p2pchat.messenger.nearby.NearbyTransport
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -133,6 +138,23 @@ class AppContainer(context: Context) {
     val router: MeshRouter? get() = _router
 
     @Volatile
+    private var _nearbyTransport: NearbyTransport? = null
+
+    /** Google Nearby Connections direct link; non-null after identity
+     *  wiring. [NearbyTransport.available] is false when Play services is
+     *  missing — the BLE mesh alone carries the app then. */
+    val nearbyTransport: NearbyTransport? get() = _nearbyTransport
+
+    @Volatile
+    private var _callController: NearbyCallController? = null
+
+    /** Experimental direct voice calls over Nearby; null pre-identity. */
+    val callController: NearbyCallController? get() = _callController
+
+    /** Directory holding recorded/received voice-note files. */
+    val voiceDir: File = File(appContext.filesDir, "voice")
+
+    @Volatile
     private var _chatRepository: ChatRepository? = null
 
     /** Non-null only after an identity exists. */
@@ -141,6 +163,12 @@ class AppContainer(context: Context) {
     // BLE address <-> mesh peerId mapping, learned from IDENTITY reads.
     private val peerIdByAddress = ConcurrentHashMap<String, String>()
     private val addressByPeerId = ConcurrentHashMap<String, String>()
+
+    // Nearby endpointId <-> mesh peerId mapping, learned from the identity
+    // payload exchanged over each established Nearby connection. An
+    // endpoint is usable for routing/calls ONLY once present here.
+    private val peerIdByEndpoint = ConcurrentHashMap<String, String>()
+    private val endpointByPeerId = ConcurrentHashMap<String, String>()
 
     /** Load a stored identity (if any) and wire the mesh stack around it. */
     fun bootstrap() {
@@ -210,14 +238,49 @@ class AppContainer(context: Context) {
         database.conversationDao().clearAll()
         database.outboxDao().clearAll()
         database.seenDao().clearAll()
+        database.voiceTransferDao().clearAll()
+        database.voiceChunkDao().clearAll()
+        runCatching { voiceDir.deleteRecursively() }
         // TODO(contract): PeerDao has no clearAll(); delete row by row.
         peerRepository.peers.first().forEach { database.peerDao().deleteById(it.peerId) }
         peerTable.clear()
         peerIdByAddress.clear()
         addressByPeerId.clear()
+        peerIdByEndpoint.clear()
+        endpointByPeerId.clear()
         identityStore.clear()
         _identity.value = null
     }
+
+    /**
+     * Kick off every direct path to [peerId] without blocking the UI:
+     * a BLE connect to the last known address and, when permissions allow,
+     * a Nearby Connections session to the endpoint advertising this
+     * peer's identity hint. The chat screen calls this on open; messages
+     * queue in the outbox until a path + identity are ready.
+     */
+    fun startDirectLink(peerId: String) {
+        val ble = _bleTransport
+        val knownAddress = addressByPeerId[peerId]
+            ?: peerTable.get(peerId)?.address?.takeUnless { it.startsWith(NEARBY_ADDRESS_PREFIX) }
+        if (ble != null && knownAddress != null) {
+            runCatching { ble.connect(knownAddress) }
+        }
+        val nearby = _nearbyTransport ?: return
+        if (!nearby.available || !NearbyPermissions.hasAll(appContext)) return
+        nearby.start()
+        nearby.endpointByHint(NearbyTransport.identityHint(peerId))?.let { endpoint ->
+            nearby.connect(endpoint.endpointId)
+        }
+    }
+
+    /** Peers with an identity-bound, connected Nearby session right now. */
+    fun nearbyBoundPeerIds(): Set<String> {
+        val nearby = _nearbyTransport ?: return emptySet()
+        return nearby.connectedEndpointIds().mapNotNull { peerIdByEndpoint[it] }.toSet()
+    }
+
+    fun isNearbyConnected(peerId: String): Boolean = peerId in nearbyBoundPeerIds()
 
     // ------------------------------------------------------------ wiring
 
@@ -231,7 +294,38 @@ class AppContainer(context: Context) {
         }
         _bleTransport = transport
 
-        val meshTransport = BleMeshTransport(transport, appScope)
+        // Nearby Connections direct link (additional transport; the BLE
+        // mesh below remains the multi-hop backbone). Same identity
+        // payload, exchanged over the Nearby connection instead of GATT.
+        val nearby = NearbyTransport(appContext, identity.peerId) {
+            _identity.value?.let { IdentityPayloadCodec.encode(it) } ?: ByteArray(0)
+        }
+        _nearbyTransport = nearby
+
+        val callController = NearbyCallController(
+            context = appContext,
+            transport = nearby,
+            boundEndpointForPeer = { peerId -> endpointByPeerId[peerId] },
+            peerForEndpoint = { endpointId -> peerIdByEndpoint[endpointId] },
+            requestLink = { peerId -> startDirectLink(peerId) },
+            nameForPeer = { peerId -> peerTable.get(peerId)?.displayName },
+            scope = appScope
+        )
+        _callController = callController
+
+        // Sends fan out: Nearby direct link first (fast, when bound +
+        // connected), then the BLE mesh (relays, always the fallback).
+        val meshTransport = CompositeMeshTransport(
+            listOf(
+                NearbyMeshTransport(
+                    nearby = nearby,
+                    endpointForPeer = { peerId -> endpointByPeerId[peerId] },
+                    peerForEndpoint = { endpointId -> peerIdByEndpoint[endpointId] },
+                    scope = appScope
+                ),
+                BleMeshTransport(transport, appScope)
+            )
+        )
         val router = MeshRouter(
             identity = identity,
             crypto = crypto,
@@ -241,15 +335,11 @@ class AppContainer(context: Context) {
         )
         _router = router
 
-        // NOTE(contract): ChatRepository.dispatch() calls `router.send(...)`,
-        // a method MeshRouter does not expose (it has sendText/sendEnvelope).
-        // That call lives inside core-database, so wiring here is correct
-        // regardless; see the delivery report for the one-line fix needed
-        // in ChatRepository.
-        val chatRepo = ChatRepository(database, crypto, identity, router)
+        val chatRepo = ChatRepository(database, crypto, identity, router, voiceDir)
         _chatRepository = chatRepo
 
         startCollectors(transport, router, chatRepo)
+        startNearbyCollectors(nearby, router, callController)
     }
 
     private fun startCollectors(
@@ -311,6 +401,14 @@ class AppContainer(context: Context) {
                                     String(plaintext, Charsets.UTF_8)
                                 )
                             }
+                        } else if (envelope.type == EnvelopeType.BLOB) {
+                            // One voice-note chunk. The repository tracks
+                            // it and only surfaces the note once ALL
+                            // chunks arrived and the hash verifies.
+                            val chunk = event.plaintext
+                            if (chunk != null) {
+                                chatRepo.handleIncomingBlobChunk(envelope, chunk)
+                            }
                         }
                         // PING / KEY_EXCHANGE / ACK envelopes are handled
                         // inside the router; nothing to persist here.
@@ -321,12 +419,18 @@ class AppContainer(context: Context) {
                             event.originalMessageId,
                             DeliveryState.DELIVERED
                         )
+                        chatRepo.onChunkDeliveryEvent(
+                            event.originalMessageId,
+                            DeliveryState.DELIVERED
+                        )
                     }
                     is MeshEvent.DeliveryStateChanged -> {
                         chatRepo.updateDeliveryState(event.messageId, event.state)
+                        chatRepo.onChunkDeliveryEvent(event.messageId, event.state)
                     }
                     is MeshEvent.Expired -> {
                         chatRepo.updateDeliveryState(event.messageId, DeliveryState.EXPIRED)
+                        chatRepo.onChunkDeliveryEvent(event.messageId, DeliveryState.EXPIRED)
                     }
                     is MeshEvent.Forwarded -> {
                         // A neighbour accepting our envelope is RELAYED,
@@ -385,6 +489,121 @@ class AppContainer(context: Context) {
         )
         peerTable.upsert(info)
         appScope.launch { peerRepository.recordPeerInfo(info) }
+    }
+
+    // ---------------------------------------------------- Nearby wiring
+
+    private fun startNearbyCollectors(
+        nearby: NearbyTransport,
+        router: MeshRouter,
+        callController: NearbyCallController
+    ) {
+        // -- Inbound BYTES payloads: demux mesh envelopes / identity / calls.
+        appScope.launch {
+            nearby.incomingBytes.collect { incoming ->
+                val data = incoming.bytes
+                val envelope = runCatching { EnvelopeCodec.deserialize(data) }.getOrNull()
+                when {
+                    envelope != null -> {
+                        // Mesh envelope over the direct link. Carrier =
+                        // the bound peer for this endpoint; fall back to
+                        // the envelope originator (1-hop direct link).
+                        val fromPeerId = peerIdByEndpoint[incoming.endpointId]
+                            ?: envelope.senderId
+                        router.onIncomingBytes(fromPeerId, data)
+                    }
+                    data.isNotEmpty() && data[0] == '{'.code.toByte() -> {
+                        handleNearbyIdentity(incoming.endpointId, data)
+                    }
+                    else -> {
+                        val text = runCatching { String(data, Charsets.UTF_8) }.getOrNull()
+                        if (text != null && text.startsWith(NearbyCallController.PREFIX)) {
+                            callController.onControlBytes(incoming.endpointId, text)
+                        }
+                        // Anything else is unrecognised and dropped.
+                    }
+                }
+            }
+        }
+
+        // -- Inbound STREAM payloads belong to the call controller.
+        appScope.launch {
+            nearby.incomingStreams.collect { stream ->
+                callController.onAudioStream(stream.endpointId, stream.input)
+            }
+        }
+
+        // -- A freshly connected direct link may unblock the outbox too.
+        appScope.launch {
+            var previousConnected: Set<String> = emptySet()
+            nearby.sessions.collect { sessions ->
+                val connected = sessions.filterValues {
+                    it == com.p2pchat.messenger.nearby.NearbyLinkState.CONNECTED
+                }.keys
+                if (connected.size > previousConnected.size) {
+                    runCatching { router.flushOutbox() }
+                }
+                previousConnected = connected
+            }
+        }
+    }
+
+    /** Identity payload received over a Nearby connection: bind the
+     *  endpoint to the verified peerId (the payload carries the same
+     *  keys as the BLE exchange; the mesh layer's signature checks on
+     *  envelopes remain the actual trust anchor). */
+    private fun handleNearbyIdentity(endpointId: String, payload: ByteArray) {
+        val decoded = IdentityPayloadCodec.decode(payload) ?: return
+        peerIdByEndpoint[endpointId] = decoded.peerId
+        endpointByPeerId[decoded.peerId] = endpointId
+        val info = PeerInfo(
+            peerId = decoded.peerId,
+            address = NEARBY_ADDRESS_PREFIX + endpointId,
+            x25519Public = decoded.x25519Public,
+            ed25519Public = decoded.ed25519Public,
+            displayName = decoded.displayName,
+            lastSeenMs = System.currentTimeMillis(),
+            hopsAway = 1
+        )
+        peerTable.upsert(info)
+        appScope.launch { peerRepository.recordPeerInfo(info) }
+    }
+
+    companion object {
+        /** PeerInfo.address prefix for peers learned over Nearby (the rest
+         *  is the Nearby endpointId, NOT a BLE address). */
+        const val NEARBY_ADDRESS_PREFIX = "nearby:"
+    }
+}
+
+/**
+ * [MeshTransport] bridge over [NearbyTransport]: a peer is "connected"
+ * here only when its Nearby endpoint is identity-bound AND the session
+ * is CONNECTED. Payloads above the Nearby BYTES limit fail here so the
+ * composite falls back to the BLE mesh path.
+ */
+private class NearbyMeshTransport(
+    private val nearby: NearbyTransport,
+    private val endpointForPeer: (String) -> String?,
+    private val peerForEndpoint: (String) -> String?,
+    private val scope: CoroutineScope
+) : MeshTransport {
+
+    override fun connectedPeerIds(): Set<String> =
+        nearby.connectedEndpointIds().mapNotNull(peerForEndpoint).toSet()
+
+    override suspend fun sendTo(peerId: String, bytes: ByteArray): Boolean {
+        val endpointId = endpointForPeer(peerId) ?: return false
+        if (endpointId !in nearby.connectedEndpointIds()) return false
+        return nearby.sendBytes(endpointId, bytes)
+    }
+
+    override fun broadcastExcept(excludePeerId: String?, bytes: ByteArray) {
+        scope.launch {
+            connectedPeerIds()
+                .filter { it != excludePeerId }
+                .forEach { peerId -> runCatching { sendTo(peerId, bytes) } }
+        }
     }
 }
 

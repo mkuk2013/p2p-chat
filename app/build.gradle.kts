@@ -28,8 +28,8 @@ android {
         applicationId = "com.p2pchat.messenger"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.1.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -67,6 +67,7 @@ dependencies {
     implementation(project(":core-crypto"))
     implementation(project(":core-database"))
     implementation(project(":transport-ble"))
+    implementation(project(":transport-nearby"))
     implementation(project(":mesh-engine"))
 
     implementation(libs.androidx.core.ktx)

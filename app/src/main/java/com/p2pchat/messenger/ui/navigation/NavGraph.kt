@@ -19,6 +19,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.p2pchat.messenger.AppContainer
 import com.p2pchat.messenger.ble.BlePermissions
+import com.p2pchat.messenger.ui.screens.CallOverlay
 import com.p2pchat.messenger.ui.screens.ChatScreen
 import com.p2pchat.messenger.ui.screens.HomeScreen
 import com.p2pchat.messenger.ui.screens.MeshStatusScreen
@@ -62,6 +63,7 @@ fun P2PNavGraph(container: AppContainer) {
     val scope = rememberCoroutineScope()
     val identity by container.identity.collectAsState()
 
+    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
         startDestination = Routes.SPLASH
@@ -122,9 +124,9 @@ fun P2PNavGraph(container: AppContainer) {
             } else {
                 ChatScreen(
                     peerId = peerId,
+                    container = container,
                     chatRepository = chatRepository,
                     peerRepository = container.peerRepository,
-                    bleTransport = container.bleTransport,
                     onMessageInfo = { messageId ->
                         navController.navigate(Routes.messageInfo(messageId))
                     },
@@ -135,6 +137,7 @@ fun P2PNavGraph(container: AppContainer) {
 
         composable(Routes.PEERS) {
             PeersScreen(
+                container = container,
                 bleTransport = container.bleTransport,
                 chatRepository = container.chatRepository,
                 peerRepository = container.peerRepository,
@@ -187,6 +190,11 @@ fun P2PNavGraph(container: AppContainer) {
                 onBack = { navController.popBackStack() }
             )
         }
+    }
+
+    // Voice-call overlay (experimental Nearby direct-link calls) floats
+    // above whichever screen is showing when a call starts or arrives.
+    CallOverlay(container = container)
     }
 }
 

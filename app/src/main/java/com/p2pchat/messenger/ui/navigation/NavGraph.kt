@@ -234,6 +234,35 @@ fun P2PNavGraph(container: AppContainer) {
     // above whichever screen is showing when a call starts or arrives.
     CallOverlay(container = container)
     WifiCallOverlay(container = container)
+
+    // Call notices (v1.3.1): a call tap must never be silent again —
+    // its outcome is a full dialog here at the root, with a route to
+    // the app settings when a permission is stuck off.
+    val callNotice by container.callNotice.collectAsState()
+    if (callNotice != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { container.dismissCallNotice() },
+            title = { Text("Notice") },
+            text = { Text(callNotice!!) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { container.dismissCallNotice() }
+                ) { Text("OK") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        container.dismissCallNotice()
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:" + context.packageName)
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        runCatching { context.startActivity(intent) }
+                    }
+                ) { Text("Open settings") }
+            }
+        )
+    }
     }
 }
 

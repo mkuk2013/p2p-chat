@@ -172,6 +172,39 @@ class AppContainer(context: Context) {
      *  no internet, no servers); null pre-identity. */
     val wifiCallController: WifiCallController? get() = _wifiCallController
 
+    // -- Call feedback that cannot be missed (v1.3.1) -------------------
+    // Field report on v1.3.0: tapping a call option appeared to do
+    // NOTHING — no dialog, no error, no call screen. Whatever branch a
+    // call tap takes, its outcome now lands here: a notice rendered as
+    // a full dialog at the navigation root (not a small inline text),
+    // and a timestamped line in the call diary shown under Connection
+    // details, so a failure names its own branch on the device itself.
+
+    private val _callNotice = MutableStateFlow<String?>(null)
+
+    /** A user-facing call message to show as a dialog, or null. */
+    val callNotice: StateFlow<String?> = _callNotice.asStateFlow()
+
+    fun showCallNotice(message: String) {
+        _callNotice.value = message
+    }
+
+    fun dismissCallNotice() {
+        _callNotice.value = null
+    }
+
+    private val _callDebug = MutableStateFlow<List<String>>(emptyList())
+
+    /** Timestamped call-attempt diary (last 25 events), shown in
+     *  Connection details — the on-device evidence trail for call bugs. */
+    val callDebug: StateFlow<List<String>> = _callDebug.asStateFlow()
+
+    fun logCallEvent(event: String) {
+        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+            .format(java.util.Date())
+        _callDebug.value = (_callDebug.value + "$stamp  $event").takeLast(25)
+    }
+
     /** Directory holding recorded/received voice-note files. */
     val voiceDir: File = File(appContext.filesDir, "voice")
 

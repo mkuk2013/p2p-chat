@@ -33,6 +33,10 @@ import com.p2pchat.messenger.mesh.QueuedMessage
 import com.p2pchat.messenger.nearby.CallState
 import com.p2pchat.messenger.nearby.NearbyCallController
 import com.p2pchat.messenger.nearby.NearbyPermissions
+import com.p2pchat.messenger.wifidirect.RtcEngine
+import com.p2pchat.messenger.wifidirect.WifiCallController
+import com.p2pchat.messenger.wifidirect.WifiCallState
+import java.util.UUID
 import com.p2pchat.messenger.nearby.NearbyTransport
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -154,6 +158,19 @@ class AppContainer(context: Context) {
 
     /** Experimental direct voice calls over Nearby; null pre-identity. */
     val callController: NearbyCallController? get() = _callController
+
+    @Volatile
+    private var _rtcEngine: RtcEngine? = null
+
+    /** WebRTC engine for Wi-Fi Direct calls; null pre-identity. */
+    val rtcEngine: RtcEngine? get() = _rtcEngine
+
+    @Volatile
+    private var _wifiCallController: WifiCallController? = null
+
+    /** Offline voice/video calls over a Wi-Fi Direct group (WebRTC,
+     *  no internet, no servers); null pre-identity. */
+    val wifiCallController: WifiCallController? get() = _wifiCallController
 
     /** Directory holding recorded/received voice-note files. */
     val voiceDir: File = File(appContext.filesDir, "voice")
@@ -390,6 +407,116 @@ class AppContainer(context: Context) {
         }
     }
 
+    // ------------------------------------------------------- Wi-Fi calls
+
+    @Volatile
+    private var _lastWifiCallPeerId: String? = null
+
+    @Volatile
+    private var _lastWifiCallVideo: Boolean = false
+
+    /** The peer of the most recent Wi-Fi call attempt (for retries and
+     *  for attributing instant failures in the call history). */
+    fun lastWifiCallPeerId(): String? = _lastWifiCallPeerId
+
+    /** Whether the most recent Wi-Fi call attempt was a video call. */
+    fun lastWifiCallVideo(): Boolean = _lastWifiCallVideo
+
+    /** Start an outgoing Wi-Fi Direct voice/video call. */
+    fun startWifiCall(peerId: String, video: Boolean) {
+        _lastWifiCallPeerId = peerId
+        _lastWifiCallVideo = video
+        _wifiCallController?.startCall(peerId, video)
+    }
+
+    /**
+     * Seal + sign + flood a SIGNAL envelope (call signalling). Mirrors
+     * ChatRepository's TEXT sealing exactly — same crypto, same peer
+     * keys — only the envelope type and the router path differ: signals
+     * are fire-and-forget (no outbox, no ACK), see
+     * [MeshRouter.sendSignal]. Fails quietly (returns false) when the
+     * peer's key is not known yet; the caller's own timeouts report
+     * the failure honestly.
+     */
+    private suspend fun sendSealedSignal(peerId: String, text: String): Boolean {
+        val identity = _identity.value ?: return false
+        val router = _router ?: return false
+        val peer = peerTable.get(peerId) ?: return false
+        val recipientKey = peer.x25519Public ?: return false
+        val now = System.currentTimeMillis()
+        val sealed = crypto.seal(identity, recipientKey, text.toByteArray(Charsets.UTF_8))
+        val unsigned = MessageEnvelope(
+            messageId = UUID.randomUUID().toString(),
+            type = EnvelopeType.SIGNAL,
+            senderId = identity.peerId,
+            recipientId = peerId,
+            timestampMs = now,
+            expiryMs = now + MessageEnvelope.DEFAULT_EXPIRY_MS,
+            ttl = MessageEnvelope.DEFAULT_TTL,
+            hopCount = 0,
+            ephemeralPubKey = sealed.ephemeralPubKey,
+            nonce = sealed.nonce,
+            ciphertext = sealed.ciphertext
+        )
+        val envelope = crypto.signEnvelope(identity, unsigned)
+        return runCatching { router.sendSignal(peerId, envelope) }.getOrDefault(false)
+    }
+
+    /** Call-history recorder for Wi-Fi calls — same builder and rules
+     *  as [startCallRecorder], fed from [WifiCallState] transitions. */
+    private fun startWifiCallRecorder(controller: WifiCallController) {
+        val builder = CallRecordBuilder()
+        appScope.launch {
+            var previous: WifiCallState = WifiCallState.Idle
+            controller.state.collect { state ->
+                val now = System.currentTimeMillis()
+                fun nameOf(peerId: String, stateName: String?): String? =
+                    stateName ?: peerTable.get(peerId)?.displayName
+                fun persist(rawReason: String?) {
+                    val draft = builder.onFinished(rawReason, System.currentTimeMillis())
+                    if (draft != null) {
+                        appScope.launch { runCatching { callHistoryRepository.record(draft) } }
+                    }
+                }
+                when (state) {
+                    is WifiCallState.Preparing ->
+                        builder.onOutgoingStarted(state.peerId, nameOf(state.peerId, state.peerName), now)
+                    is WifiCallState.Ringing ->
+                        builder.onOutgoingStarted(state.peerId, nameOf(state.peerId, state.peerName), now)
+                    is WifiCallState.Incoming ->
+                        builder.onIncomingStarted(state.peerId, nameOf(state.peerId, state.peerName), now)
+                    is WifiCallState.Connecting -> {
+                        if (!builder.inProgress) {
+                            _lastWifiCallPeerId?.let { peerId ->
+                                builder.onOutgoingStarted(peerId, nameOf(peerId, null), now)
+                            }
+                        }
+                    }
+                    is WifiCallState.Active ->
+                        builder.onAnswered(state.connectedSinceMs)
+                    is WifiCallState.Ended -> persist(state.reason)
+                    is WifiCallState.Failed -> {
+                        if (!builder.inProgress) {
+                            _lastWifiCallPeerId?.let { peerId ->
+                                builder.onOutgoingStarted(peerId, nameOf(peerId, null), now)
+                            }
+                        }
+                        persist(state.reason)
+                    }
+                    WifiCallState.Idle -> {
+                        if (previous is WifiCallState.Incoming) {
+                            builder.onRejectedByMe()
+                            persist(null)
+                        } else if (builder.inProgress) {
+                            persist(null)
+                        }
+                    }
+                }
+                previous = state
+            }
+        }
+    }
+
     // ------------------------------------------------------------ wiring
 
     private fun wireIdentity(identity: Identity) {
@@ -435,6 +562,29 @@ class AppContainer(context: Context) {
         )
         _callController = callController
         startCallRecorder(callController)
+
+        // Wi-Fi Direct voice/video calls (v1.3.0): the invite rides the
+        // encrypted mesh as a SIGNAL envelope; media stays on the local
+        // Wi-Fi Direct group via WebRTC. The Nearby controller above is
+        // untouched — this is an additional, independent call path.
+        val rtcEngine = RtcEngine(appContext)
+        _rtcEngine = rtcEngine
+        val wifiCalls = WifiCallController(
+            context = appContext,
+            engine = rtcEngine,
+            myPeerId = { _identity.value?.peerId },
+            sendSignal = { peerId, text ->
+                appScope.launch { sendSealedSignal(peerId, text) }
+            },
+            nameForPeer = { peerId -> peerTable.get(peerId)?.displayName },
+            isBusyElsewhere = {
+                val s = _callController?.state?.value
+                s != null && s !is CallState.Idle
+            },
+            scope = appScope
+        )
+        _wifiCallController = wifiCalls
+        startWifiCallRecorder(wifiCalls)
 
         // Sends fan out: Nearby direct link first (fast, when bound +
         // connected), then the BLE mesh (relays, always the fallback).
@@ -531,6 +681,17 @@ class AppContainer(context: Context) {
                             val chunk = event.plaintext
                             if (chunk != null) {
                                 chatRepo.handleIncomingBlobChunk(envelope, chunk)
+                            }
+                        } else if (envelope.type == EnvelopeType.SIGNAL) {
+                            // Call signalling (v1.3.0): decrypted by the
+                            // router like a message, but routed to the
+                            // Wi-Fi call controller instead of the chat.
+                            val plain = event.plaintext
+                            if (plain != null) {
+                                val text = String(plain, Charsets.UTF_8)
+                                if (text.startsWith(WifiCallController.PREFIX)) {
+                                    _wifiCallController?.onMeshSignal(envelope.senderId, text)
+                                }
                             }
                         }
                         // PING / KEY_EXCHANGE / ACK envelopes are handled

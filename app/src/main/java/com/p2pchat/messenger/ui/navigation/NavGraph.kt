@@ -20,6 +20,7 @@ import androidx.navigation.navArgument
 import com.p2pchat.messenger.AppContainer
 import com.p2pchat.messenger.ble.BlePermissions
 import com.p2pchat.messenger.ui.screens.CallOverlay
+import com.p2pchat.messenger.ui.screens.WifiCallOverlay
 import com.p2pchat.messenger.ui.screens.ChatScreen
 import com.p2pchat.messenger.ui.screens.DeviceChatScreen
 import com.p2pchat.messenger.ui.screens.HomeShellScreen
@@ -232,6 +233,7 @@ fun P2PNavGraph(container: AppContainer) {
     // Voice-call overlay (experimental Nearby direct-link calls) floats
     // above whichever screen is showing when a call starts or arrives.
     CallOverlay(container = container)
+    WifiCallOverlay(container = container)
     }
 }
 

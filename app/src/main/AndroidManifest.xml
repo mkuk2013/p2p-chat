@@ -29,6 +29,12 @@
     <!-- Voice notes + experimental Nearby voice calls -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Video calls (v1.3.0): camera, requested at runtime only when a
+         video call starts or is answered. INTERNET is declared ONLY so
+         Android allows local sockets — offline Wi-Fi Direct calls run
+         over it; the app itself never contacts a server. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Google Nearby Connections (v1.1.0 direct link) -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />

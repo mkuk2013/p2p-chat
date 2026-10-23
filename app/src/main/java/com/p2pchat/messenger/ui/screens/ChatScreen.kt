@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -286,6 +287,54 @@ fun ChatScreen(
         }
     }
 
+    // -- Wi-Fi Direct calls (v1.3.0): real WebRTC voice + video over a
+    // local Wi-Fi group between the two phones. The invite rides the
+    // encrypted mesh; camera/mic permissions are asked here, at the tap.
+    var pendingWifiVideo by remember { mutableStateOf(false) }
+
+    val wifiCallPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        fun granted(perm: String) = result[perm] == true ||
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        val micOk = granted(Manifest.permission.RECORD_AUDIO)
+        val camOk = !pendingWifiVideo || granted(Manifest.permission.CAMERA)
+        if (micOk && camOk && NearbyPermissions.hasAll(context)) {
+            if (container.wifiCallController != null) {
+                container.startWifiCall(peerId, pendingWifiVideo)
+            } else {
+                sendError = "Calls are not ready yet — finish setup first."
+            }
+        } else {
+            sendError = when {
+                !micOk -> "Calls need the microphone permission."
+                !camOk -> "Video calls need the camera permission."
+                else -> "Calls need the nearby-devices permission."
+            }
+        }
+    }
+
+    fun placeWifiCall(video: Boolean) {
+        if (container.wifiCallController == null) {
+            sendError = "Calls are not ready yet — finish setup first."
+            return
+        }
+        pendingWifiVideo = video
+        val micOk = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        val camOk = !video || ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (micOk && camOk && NearbyPermissions.hasAll(context)) {
+            container.startWifiCall(peerId, video)
+        } else {
+            val perms = (NearbyPermissions.requiredPermissions() +
+                Manifest.permission.RECORD_AUDIO +
+                (if (video) listOf(Manifest.permission.CAMERA) else emptyList())
+                ).distinct()
+            wifiCallPermissionLauncher.launch(perms.toTypedArray())
+        }
+    }
+
     fun placeNearbyCall() {
         // No identityReady gate (v1.2.1): the chat flag could leave the
         // call button silently doing nothing on a phone whose BLE
@@ -532,9 +581,10 @@ fun ChatScreen(
         }
     }
     // -- Call mode picker: the user picks how to call, every time.
-    // Nearby is the only working mode today; Internet calling needs a
-    // call server (WebRTC) and is shown disabled with the reason —
-    // never faked, never switched to silently.
+    // Wi-Fi calls (voice + video) run over a local Wi-Fi Direct group;
+    // the Nearby voice call is the close-range fallback. Internet
+    // calling needs a call server and is shown disabled with the
+    // reason — never faked, never switched to silently.
     if (showCallPicker) {
         ModalBottomSheet(onDismissRequest = { showCallPicker = false }) {
             Column(
@@ -547,6 +597,70 @@ fun ChatScreen(
                     style = MaterialTheme.typography.titleLarge
                 )
                 Spacer(Modifier.height(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            showCallPicker = false
+                            placeWifiCall(video = true)
+                        }
+                        .padding(vertical = 10.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Face,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            text = "Video call",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Free · Wi-Fi between the phones · " +
+                                "no internet",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            showCallPicker = false
+                            placeWifiCall(video = false)
+                        }
+                        .padding(vertical = 10.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Call,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            text = "Voice call — Wi-Fi",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Clearest voice · Wi-Fi between the " +
+                                "phones · no internet",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier

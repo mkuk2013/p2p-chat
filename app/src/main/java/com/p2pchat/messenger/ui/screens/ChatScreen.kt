@@ -2,8 +2,11 @@ package com.p2pchat.messenger.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +27,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.PlayArrow
@@ -53,11 +57,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.p2pchat.messenger.AppContainer
+import com.p2pchat.messenger.core.blob.BlobChunkCodec
 import com.p2pchat.messenger.ble.model.IdentityPhase
 import com.p2pchat.messenger.data.entity.MessageEntity
 import com.p2pchat.messenger.data.entity.VoiceTransferEntity
@@ -273,6 +282,10 @@ fun ChatScreen(
         val micOk = result[Manifest.permission.RECORD_AUDIO] == true ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+        container.logCallEvent(
+            "nearby-call permission result: mic=$micOk " +
+                "nearby=${NearbyPermissions.hasAll(context)} raw=$result"
+        )
         if (micOk && NearbyPermissions.hasAll(context)) {
             if (container.callController != null) {
                 // Permissions just landed: start listening too, so this
@@ -280,10 +293,14 @@ fun ChatScreen(
                 container.ensureNearbyStarted()
                 container.startVoiceCall(peerId)
             } else {
-                sendError = "Calls are not ready yet — finish setup first."
+                container.showCallNotice("Calls are not ready yet — finish setup first.")
             }
         } else {
-            sendError = "Voice calls need the microphone permission."
+            container.showCallNotice(
+                "Voice calls need the microphone and nearby-devices " +
+                    "permissions. If the phone no longer asks, turn them " +
+                    "on in Settings → Apps → P2P Chat → Permissions."
+            )
         }
     }
 
@@ -299,24 +316,37 @@ fun ChatScreen(
             ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
         val micOk = granted(Manifest.permission.RECORD_AUDIO)
         val camOk = !pendingWifiVideo || granted(Manifest.permission.CAMERA)
+        container.logCallEvent(
+            "wifi-call permission result: mic=$micOk cam=$camOk " +
+                "nearby=${NearbyPermissions.hasAll(context)} raw=$result"
+        )
         if (micOk && camOk && NearbyPermissions.hasAll(context)) {
             if (container.wifiCallController != null) {
                 container.startWifiCall(peerId, pendingWifiVideo)
             } else {
-                sendError = "Calls are not ready yet — finish setup first."
+                container.showCallNotice("Calls are not ready yet — finish setup first.")
             }
         } else {
-            sendError = when {
-                !micOk -> "Calls need the microphone permission."
-                !camOk -> "Video calls need the camera permission."
-                else -> "Calls need the nearby-devices permission."
-            }
+            container.showCallNotice(
+                when {
+                    !micOk -> "Calls need the microphone permission. If the " +
+                        "phone no longer asks, turn it on in Settings → " +
+                        "Apps → P2P Chat → Permissions."
+                    !camOk -> "Video calls need the camera permission. If " +
+                        "the phone no longer asks, turn it on in Settings " +
+                        "→ Apps → P2P Chat → Permissions."
+                    else -> "Calls need the nearby-devices permission. If " +
+                        "the phone no longer asks, turn it on in Settings " +
+                        "→ Apps → P2P Chat → Permissions."
+                }
+            )
         }
     }
 
     fun placeWifiCall(video: Boolean) {
         if (container.wifiCallController == null) {
-            sendError = "Calls are not ready yet — finish setup first."
+            container.logCallEvent("wifi tap video=$video -> controller missing")
+            container.showCallNotice("Calls are not ready yet — finish setup first.")
             return
         }
         pendingWifiVideo = video
@@ -324,13 +354,19 @@ fun ChatScreen(
             PackageManager.PERMISSION_GRANTED
         val camOk = !video || ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
-        if (micOk && camOk && NearbyPermissions.hasAll(context)) {
+        val nearbyOk = NearbyPermissions.hasAll(context)
+        container.logCallEvent(
+            "wifi tap video=$video mic=$micOk cam=$camOk nearby=$nearbyOk"
+        )
+        if (micOk && camOk && nearbyOk) {
+            container.logCallEvent("wifi tap -> starting call")
             container.startWifiCall(peerId, video)
         } else {
             val perms = (NearbyPermissions.requiredPermissions() +
                 Manifest.permission.RECORD_AUDIO +
                 (if (video) listOf(Manifest.permission.CAMERA) else emptyList())
                 ).distinct()
+            container.logCallEvent("wifi tap -> asking permissions $perms")
             wifiCallPermissionLauncher.launch(perms.toTypedArray())
         }
     }
@@ -341,19 +377,189 @@ fun ChatScreen(
         // identity exchange was still pending, even though the call
         // itself binds identity over its own link while "Connecting…".
         if (container.callController == null) {
-            sendError = "Calls are not ready yet — finish setup first."
+            container.logCallEvent("nearby tap -> controller missing")
+            container.showCallNotice("Calls are not ready yet — finish setup first.")
             return
         }
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED && NearbyPermissions.hasAll(context)
-        ) {
+        val micOk = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        val nearbyOk = NearbyPermissions.hasAll(context)
+        container.logCallEvent("nearby tap mic=$micOk nearby=$nearbyOk")
+        if (micOk && nearbyOk) {
+            container.logCallEvent("nearby tap -> starting call")
             container.ensureNearbyStarted()
             container.startVoiceCall(peerId)
         } else {
+            container.logCallEvent("nearby tap -> asking permissions")
             callPermissionLauncher.launch(
                 NearbyPermissions.requiredPermissions() + Manifest.permission.RECORD_AUDIO
             )
         }
+    }
+
+    // -- Photo & file sharing (v1.4.0) -----------------------------------
+    // System pickers only — no storage permission needed. Photos are
+    // downscaled + JPEG-compressed on this phone until they fit the
+    // blob cap; files go as-is and are refused with a clear dialog
+    // when they exceed it, because the offline mesh cannot carry more.
+    var showAttachSheet by remember { mutableStateOf(false) }
+    var viewImage by remember { mutableStateOf<MessageEntity?>(null) }
+    var pendingSave by remember { mutableStateOf<MessageEntity?>(null) }
+
+    suspend fun sendPickedImage(uri: android.net.Uri) {
+        val prepared = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val resolver = context.contentResolver
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                resolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(it, null, bounds)
+                }
+                var sample = 1
+                while ((bounds.outWidth / sample) > 1600 ||
+                    (bounds.outHeight / sample) > 1600
+                ) {
+                    sample *= 2
+                }
+                val bitmap = resolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(
+                        it, null,
+                        BitmapFactory.Options().apply { inSampleSize = sample }
+                    )
+                } ?: return@runCatching null
+                var quality = 85
+                var bytes: ByteArray
+                do {
+                    val out = java.io.ByteArrayOutputStream()
+                    bitmap.compress(
+                        android.graphics.Bitmap.CompressFormat.JPEG, quality, out
+                    )
+                    bytes = out.toByteArray()
+                    quality -= 15
+                } while (bytes.size > BlobChunkCodec.MAX_BLOB_BYTES && quality >= 40)
+                if (bytes.size > BlobChunkCodec.MAX_BLOB_BYTES) null else bytes
+            }.getOrNull()
+        }
+        if (prepared == null) {
+            container.showCallNotice(
+                "That photo could not be prepared small enough for the " +
+                    "offline mesh. Try a smaller photo."
+            )
+            return
+        }
+        val stamp = java.text.SimpleDateFormat(
+            "yyyyMMdd_HHmmss", java.util.Locale.US
+        ).format(java.util.Date())
+        runCatching {
+            chatRepository.sendMedia(peerId, prepared, "image/jpeg", "IMG_$stamp.jpg")
+        }.onFailure { e ->
+            container.showCallNotice(e.message ?: "Could not send the photo.")
+        }
+    }
+
+    suspend fun sendPickedFile(uri: android.net.Uri) {
+        val resolver = context.contentResolver
+        var displayName = "file"
+        var declaredSize = -1L
+        resolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (nameIdx >= 0) {
+                    displayName = cursor.getString(nameIdx)?.ifBlank { "file" } ?: "file"
+                }
+                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                    declaredSize = cursor.getLong(sizeIdx)
+                }
+            }
+        }
+        if (declaredSize > BlobChunkCodec.MAX_BLOB_BYTES) {
+            container.showCallNotice(
+                "“$displayName” is ${formatBytes(declaredSize)} — the " +
+                    "offline mesh can carry at most " +
+                    "${formatBytes(BlobChunkCodec.MAX_BLOB_BYTES.toLong())} " +
+                    "in one message."
+            )
+            return
+        }
+        val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                resolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()
+        }
+        if (bytes == null) {
+            container.showCallNotice("Could not read that file.")
+            return
+        }
+        if (bytes.size > BlobChunkCodec.MAX_BLOB_BYTES) {
+            container.showCallNotice(
+                "“$displayName” is ${formatBytes(bytes.size.toLong())} — " +
+                    "the offline mesh can carry at most " +
+                    "${formatBytes(BlobChunkCodec.MAX_BLOB_BYTES.toLong())} " +
+                    "in one message."
+            )
+            return
+        }
+        val mime = resolver.getType(uri)
+            ?: com.p2pchat.messenger.data.repository.ChatRepository.mimeForExtension(
+                displayName.substringAfterLast('.', "")
+            )
+        runCatching {
+            chatRepository.sendMedia(peerId, bytes, mime, displayName)
+        }.onFailure { e ->
+            container.showCallNotice(e.message ?: "Could not send the file.")
+        }
+    }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) scope.launch { sendPickedImage(uri) }
+    }
+
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) scope.launch { sendPickedFile(uri) }
+    }
+
+    val saveDocLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument()
+    ) { dest ->
+        val message = pendingSave
+        pendingSave = null
+        if (dest != null && message?.mediaPath != null) {
+            scope.launch {
+                val ok = kotlinx.coroutines.withContext(
+                    kotlinx.coroutines.Dispatchers.IO
+                ) {
+                    runCatching {
+                        val src = java.io.File(message.mediaPath!!)
+                        context.contentResolver.openOutputStream(dest)?.use { out ->
+                            src.inputStream().use { it.copyTo(out) }
+                        }
+                        true
+                    }.getOrDefault(false)
+                }
+                if (ok) {
+                    container.showCallNotice("Saved “${message.plaintext}”.")
+                } else {
+                    container.showCallNotice("Could not save the file.")
+                }
+            }
+        }
+    }
+
+    fun startSave(message: MessageEntity) {
+        pendingSave = message
+        val mime = com.p2pchat.messenger.data.repository.ChatRepository
+            .mimeForExtension(
+                message.plaintext.substringAfterLast('.', "")
+            )
+        saveDocLauncher.launch(mime)
     }
 
     Scaffold(
@@ -385,11 +591,14 @@ fun ChatScreen(
                 },
                 actions = {
                     IconButton(onClick = {
-                        if (!identityReady) {
-                            sendError = "Still connecting — try the call in a moment."
-                        } else {
-                            showCallPicker = true
-                        }
+                        // v1.3.1: the picker always opens — gating it on
+                        // the BLE identity flag could leave the button
+                        // silently setting an easy-to-miss inline error.
+                        // The call paths themselves report their state.
+                        container.logCallEvent(
+                            "call picker opened (identityReady=$identityReady)"
+                        )
+                        showCallPicker = true
                     }) {
                         Icon(
                             Icons.Filled.Call,
@@ -463,8 +672,8 @@ fun ChatScreen(
                         if (showSeparator) {
                             DateSeparator(message.timestampMs)
                         }
-                        if (message.kind == MessageEntity.KIND_VOICE) {
-                            VoiceBubble(
+                        when (message.kind) {
+                            MessageEntity.KIND_VOICE -> VoiceBubble(
                                 message = message,
                                 transfer = transfers.firstOrNull { it.blobId == message.blobId },
                                 player = player,
@@ -481,8 +690,40 @@ fun ChatScreen(
                                 },
                                 onInfo = { onMessageInfo(message.messageId) }
                             )
-                        } else {
-                            MessageBubble(
+
+                            MessageEntity.KIND_IMAGE -> ImageBubble(
+                                message = message,
+                                transfer = transfers.firstOrNull { it.blobId == message.blobId },
+                                onOpen = { viewImage = message },
+                                onRetry = {
+                                    scope.launch {
+                                        runCatching {
+                                            chatRepository.retryVoiceNote(
+                                                message.blobId ?: message.messageId
+                                            )
+                                        }
+                                    }
+                                },
+                                onInfo = { onMessageInfo(message.messageId) }
+                            )
+
+                            MessageEntity.KIND_FILE -> FileBubble(
+                                message = message,
+                                transfer = transfers.firstOrNull { it.blobId == message.blobId },
+                                onSave = { startSave(message) },
+                                onRetry = {
+                                    scope.launch {
+                                        runCatching {
+                                            chatRepository.retryVoiceNote(
+                                                message.blobId ?: message.messageId
+                                            )
+                                        }
+                                    }
+                                },
+                                onInfo = { onMessageInfo(message.messageId) }
+                            )
+
+                            else -> MessageBubble(
                                 message = message,
                                 onInfo = { onMessageInfo(message.messageId) }
                             )
@@ -503,8 +744,8 @@ fun ChatScreen(
                             shape = RoundedCornerShape(14.dp)
                         ) {
                             Text(
-                                text = "🎤 Receiving voice message… " +
-                                    "${transfer.completedChunks}/${transfer.totalChunks}",
+                                text = "Receiving… " +
+                                    "${transfer.completedChunks}/${transfer.totalChunks} parts",
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                             )
@@ -536,6 +777,23 @@ fun ChatScreen(
                         .padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Attach (v1.4.0): photo / file sharing.
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable { showAttachSheet = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = "Attach a photo or file",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                     OutlinedTextField(
                         value = draft,
                         onValueChange = { draft = it },
@@ -717,6 +975,127 @@ fun ChatScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    // -- Attach sheet (v1.4.0): photo or file, system pickers. --------
+    if (showAttachSheet) {
+        ModalBottomSheet(onDismissRequest = { showAttachSheet = false }) {
+            Column(
+                modifier = Modifier.padding(
+                    start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp
+                )
+            ) {
+                Text(
+                    text = "Share with ${peer?.displayName ?: "this person"}",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            showAttachSheet = false
+                            imagePicker.launch("image/*")
+                        }
+                        .padding(vertical = 10.dp)
+                ) {
+                    Spacer(Modifier.width(42.dp))
+                    Column {
+                        Text(
+                            text = "Photo",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Send a picture — it is shrunk " +
+                                "automatically to fit the offline mesh",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            showAttachSheet = false
+                            filePicker.launch("*/*")
+                        }
+                        .padding(vertical = 10.dp)
+                ) {
+                    Spacer(Modifier.width(42.dp))
+                    Column {
+                        Text(
+                            text = "File",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Any file up to 2 MB — bigger files " +
+                                "cannot cross the offline mesh",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // -- Full-screen photo viewer (v1.4.0). ---------------------------
+    val viewing = viewImage
+    if (viewing != null) {
+        val fullBitmap = remember(viewing.mediaPath) {
+            viewing.mediaPath?.let {
+                runCatching { BitmapFactory.decodeFile(it) }.getOrNull()
+            }
+        }
+        Dialog(onDismissRequest = { viewImage = null }) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    if (fullBitmap != null) {
+                        Image(
+                            bitmap = fullBitmap.asImageBitmap(),
+                            contentDescription = viewing.plaintext,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp)),
+                            contentScale = ContentScale.FillWidth
+                        )
+                    } else {
+                        Text("This photo is not available on this phone.")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = viewing.plaintext,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                viewImage = null
+                                onMessageInfo(viewing.messageId)
+                            }
+                        ) { Text("Details") }
+                        androidx.compose.material3.TextButton(
+                            onClick = { viewImage = null }
+                        ) { Text("Close") }
                     }
                 }
             }
@@ -987,6 +1366,226 @@ internal fun deliveryLabel(state: String): String = when (state) {
     "EXPIRED" -> "Not delivered"
     "FAILED" -> "Not delivered"
     else -> state
+}
+
+/** Human size for file cards and limit messages. */
+internal fun formatBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> {
+        val mb = bytes.toDouble() / (1024 * 1024)
+        if (mb >= 10) "${mb.toInt()} MB"
+        else "${(mb * 10).toInt() / 10.0} MB"
+    }
+}
+
+/**
+ * Photo bubble (v1.4.0): the picture itself, decoded from the stored
+ * file; tap opens the full-screen viewer. While the chunks are still
+ * crossing, the bubble shows honest progress instead of the picture.
+ */
+@Composable
+private fun ImageBubble(
+    message: MessageEntity,
+    transfer: VoiceTransferEntity?,
+    onOpen: () -> Unit,
+    onRetry: () -> Unit,
+    onInfo: () -> Unit
+) {
+    val bubbleColor = if (message.isMine) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val failed = message.isMine &&
+        (message.deliveryState == "EXPIRED" || message.deliveryState == "FAILED" ||
+            transfer?.state == VoiceTransferEntity.STATE_FAILED)
+    val sending = message.isMine && transfer != null &&
+        transfer.state == VoiceTransferEntity.STATE_ACTIVE
+    val bitmap = remember(message.mediaPath) {
+        message.mediaPath?.let {
+            runCatching { BitmapFactory.decodeFile(it) }.getOrNull()
+        }
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (message.isMine) Alignment.End else Alignment.Start
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(bubbleColor)
+                .clickable { if (failed) onRetry() else onOpen() }
+                .padding(6.dp)
+        ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = message.plaintext,
+                    modifier = Modifier
+                        .width(232.dp)
+                        .clip(RoundedCornerShape(10.dp)),
+                    contentScale = ContentScale.FillWidth
+                )
+            } else {
+                Text(
+                    text = "📷 Photo",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
+                )
+            }
+            if (sending && transfer != null) {
+                Text(
+                    text = "Sending ${transfer.completedChunks}/${transfer.totalChunks} parts…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 4.dp)
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp, end = 6.dp, top = 2.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = formatBubbleTime(message.timestampMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (message.isMine) {
+                    Spacer(Modifier.width(4.dp))
+                    DeliveryTicks(state = message.deliveryState, size = 14.dp)
+                }
+            }
+        }
+        if (failed) {
+            Text(
+                text = "Not delivered — tap to retry",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier
+                    .padding(top = 2.dp, end = 4.dp)
+                    .clickable(onClick = onRetry)
+            )
+        }
+    }
+}
+
+/**
+ * File bubble (v1.4.0): name, size and a Save button that copies the
+ * file wherever the user picks (system document picker). Sending
+ * progress and retry behave exactly like the other media bubbles.
+ */
+@Composable
+private fun FileBubble(
+    message: MessageEntity,
+    transfer: VoiceTransferEntity?,
+    onSave: () -> Unit,
+    onRetry: () -> Unit,
+    onInfo: () -> Unit
+) {
+    val bubbleColor = if (message.isMine) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val failed = message.isMine &&
+        (message.deliveryState == "EXPIRED" || message.deliveryState == "FAILED" ||
+            transfer?.state == VoiceTransferEntity.STATE_FAILED)
+    val sending = message.isMine && transfer != null &&
+        transfer.state == VoiceTransferEntity.STATE_ACTIVE
+    val fileSize = remember(message.mediaPath) {
+        message.mediaPath?.let {
+            runCatching { java.io.File(it).length() }.getOrNull()
+        }
+    }
+    val ext = message.plaintext.substringAfterLast('.', "")
+        .uppercase().take(4).ifBlank { "FILE" }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (message.isMine) Alignment.End else Alignment.Start
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(bubbleColor)
+                .clickable { if (failed) onRetry() else onInfo() }
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = ext,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.widthIn(max = 190.dp)) {
+                    Text(
+                        text = message.plaintext.ifBlank { "File" },
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = when {
+                            sending && transfer != null ->
+                                "Sending ${transfer.completedChunks}/${transfer.totalChunks} parts…"
+                            fileSize != null -> formatBytes(fileSize)
+                            else -> ""
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (message.mediaPath != null && !failed) {
+                    androidx.compose.material3.TextButton(onClick = onSave) {
+                        Text("Save")
+                    }
+                } else {
+                    Spacer(Modifier.width(4.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = formatBubbleTime(message.timestampMs),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (message.isMine) {
+                        Spacer(Modifier.width(4.dp))
+                        DeliveryTicks(state = message.deliveryState, size = 14.dp)
+                    }
+                }
+            }
+        }
+        if (failed) {
+            Text(
+                text = "Not delivered — tap to retry",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier
+                    .padding(top = 2.dp, end = 4.dp)
+                    .clickable(onClick = onRetry)
+            )
+        }
+    }
 }
 
 private const val SIZE_LIMIT_BYTES = 590_000L

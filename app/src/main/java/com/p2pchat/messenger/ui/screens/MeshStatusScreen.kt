@@ -204,6 +204,32 @@ fun MeshStatusScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // Call diary (v1.3.1): every call tap and its outcome, written
+        // by the call paths themselves — the on-device evidence when a
+        // call "does nothing", so the failing branch names itself.
+        val callDebug by container.callDebug.collectAsState()
+        Spacer(Modifier.height(24.dp))
+        Text(
+            text = "Call diary",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Spacer(Modifier.height(6.dp))
+        if (callDebug.isEmpty()) {
+            Text(
+                text = "No call attempts yet in this session.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            callDebug.forEach { line ->
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(vertical = 1.dp)
+                )
+            }
+        }
     }
 }
 

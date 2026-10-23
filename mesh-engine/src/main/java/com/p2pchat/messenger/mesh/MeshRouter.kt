@@ -152,6 +152,31 @@ class MeshRouter(
         sendText(envelope.recipientId, envelope)
 
     /**
+     * Fire-and-forget SIGNAL envelope (call signalling, v1.3.0): flooded
+     * to neighbours like a message — so an invite can also be relayed —
+     * but deliberately NOT outbox-queued and never ACKed. Call state
+     * machines run their own timeouts and retries; a queued invite
+     * re-flooding on every outbox pass would re-ring the callee long
+     * after the caller gave up.
+     */
+    suspend fun sendSignal(recipientId: String, sealedEnvelope: MessageEnvelope): Boolean {
+        require(sealedEnvelope.type == EnvelopeType.SIGNAL) {
+            "sendSignal needs a SIGNAL envelope, got ${sealedEnvelope.type}"
+        }
+        require(sealedEnvelope.recipientId == recipientId) {
+            "Envelope recipient ${sealedEnvelope.recipientId} != sendSignal recipient $recipientId"
+        }
+        require(sealedEnvelope.senderId == localPeerId) {
+            "Envelope sender ${sealedEnvelope.senderId} != local peer $localPeerId"
+        }
+        seenCache.markSeen(sealedEnvelope.messageId)
+        if (sealedEnvelope.isExpired(clock())) return false
+        val bytes = EnvelopeCodec.serialize(sealedEnvelope)
+        return flood(bytes, excludePeerId = null, originalMessageId = sealedEnvelope.messageId)
+            .isNotEmpty()
+    }
+
+    /**
      * Retry pass over the outbox: purge expired envelopes (emitting
      * [MeshEvent.Expired]), then re-flood every due envelope to the
      * neighbours connected right now. Envelopes nobody accepts get their
@@ -311,7 +336,8 @@ class MeshRouter(
 
     /** @return true if the envelope counts as received by this node. */
     private fun deliverToMe(envelope: MessageEnvelope): Boolean {
-        if ((envelope.type == EnvelopeType.TEXT || envelope.type == EnvelopeType.BLOB) &&
+        if ((envelope.type == EnvelopeType.TEXT || envelope.type == EnvelopeType.BLOB ||
+                envelope.type == EnvelopeType.SIGNAL) &&
             decryptor != null
         ) {
             val plaintext = try {

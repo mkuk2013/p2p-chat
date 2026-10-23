@@ -324,4 +324,58 @@ class MeshRouterTest {
         assertEquals(1, queued.attempts)
         assertTrue("backoff must schedule a future attempt", queued.nextAttemptAtMs > queued.envelope.timestampMs)
     }
+
+    private fun signalEnvelope(
+        from: String,
+        to: String,
+        body: String,
+        messageId: String = UUID.randomUUID().toString(),
+    ): MessageEnvelope = MessageEnvelope(
+        messageId = messageId,
+        type = EnvelopeType.SIGNAL,
+        senderId = from,
+        recipientId = to,
+        timestampMs = System.currentTimeMillis(),
+        expiryMs = System.currentTimeMillis() + 3_600_000L,
+        ttl = MessageEnvelope.DEFAULT_TTL,
+        hopCount = 0,
+        ciphertext = body.toByteArray(Charsets.UTF_8),
+    )
+
+    @Test
+    fun `SIGNAL is delivered decrypted, never ACKed and never outbox-queued`() = runBlocking {
+        network.node("A"); network.node("B")
+        network.connect("A", "B")
+        val a = network.routers.getValue("A")
+        val b = network.routers.getValue("B")
+
+        val envelope = signalEnvelope("A", "B", "WIFICALL:invite")
+        val accepted = a.sendSignal("B", envelope)
+
+        assertTrue(accepted)
+        assertEquals(1, b.received().size)
+        assertEquals(EnvelopeType.SIGNAL, b.received().single().envelope.type)
+        assertEquals("WIFICALL:invite", b.received().single().plaintext?.toString(Charsets.UTF_8))
+        // No ACK travels back for a signal — call state machines own
+        // their retries; an ACK would also re-ring nothing but noise.
+        assertTrue(a.acks().isEmpty())
+        // Fire-and-forget: neither side keeps a copy in the outbox.
+        assertEquals(0, network.outboxes.getValue("A").size())
+        assertEquals(0, network.outboxes.getValue("B").size())
+    }
+
+    @Test
+    fun `SIGNAL relays multi-hop to its recipient`() = runBlocking {
+        network.chain("A", "B", "C")
+        val a = network.routers.getValue("A")
+        val c = network.routers.getValue("C")
+
+        val accepted = a.sendSignal("C", signalEnvelope("A", "C", "WIFICALL:invite"))
+
+        assertTrue(accepted)
+        assertEquals(1, c.received().size)
+        assertEquals(EnvelopeType.SIGNAL, c.received().single().envelope.type)
+        // The relay in the middle never "receives" the signal.
+        assertTrue(network.routers.getValue("B").received().isEmpty())
+    }
 }

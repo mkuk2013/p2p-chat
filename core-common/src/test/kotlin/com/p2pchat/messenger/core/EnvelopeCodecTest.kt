@@ -119,4 +119,29 @@ class EnvelopeCodecTest {
             // pass
         }
     }
+
+    @Test
+    fun signalEnvelopeRoundTrips() {
+        val base = sample()
+        val original = MessageEnvelope(
+            messageId = base.messageId,
+            type = EnvelopeType.SIGNAL,
+            senderId = base.senderId,
+            recipientId = base.recipientId,
+            timestampMs = base.timestampMs,
+            expiryMs = base.expiryMs,
+            ttl = base.ttl,
+            hopCount = base.hopCount,
+            ephemeralPubKey = base.ephemeralPubKey,
+            nonce = base.nonce,
+            ciphertext = base.ciphertext,
+            signature = base.signature,
+        )
+        val decoded = EnvelopeCodec.deserialize(EnvelopeCodec.serialize(original))
+        assertEquals(EnvelopeType.SIGNAL, decoded.type)
+        assertEquals(original.messageId, decoded.messageId)
+        assertEquals(original.senderId, decoded.senderId)
+        assertEquals(original.recipientId, decoded.recipientId)
+        assertTrue(original.ciphertext.contentEquals(decoded.ciphertext))
+    }
 }

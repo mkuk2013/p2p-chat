@@ -22,6 +22,11 @@ import java.security.MessageDigest
  *  magic "BLB1" (4) | blobId str | index int | total int |
  *  totalBytes long | sha256 bytes(32) | durationMs int | mime str |
  *  payload bytes
+ *
+ * v1.4.0 adds frame "BLB2": identical, plus a `name str` field after
+ * the mime — the original file name for photo/file sharing. Voice
+ * notes keep the BLB1 layout (empty name), so older builds still
+ * decode them; [BlobChunkCodec.decode] accepts both magics.
  */
 class BlobChunk(
     val blobId: String,
@@ -32,6 +37,7 @@ class BlobChunk(
     val durationMs: Int,
     val mime: String,
     val payload: ByteArray,
+    val name: String = "",
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -39,6 +45,7 @@ class BlobChunk(
         return blobId == other.blobId && index == other.index && total == other.total &&
             totalBytes == other.totalBytes && sha256.contentEquals(other.sha256) &&
             durationMs == other.durationMs && mime == other.mime &&
+            name == other.name &&
             payload.contentEquals(other.payload)
     }
 
@@ -50,6 +57,7 @@ class BlobChunk(
         r = 31 * r + sha256.contentHashCode()
         r = 31 * r + durationMs
         r = 31 * r + mime.hashCode()
+        r = 31 * r + name.hashCode()
         r = 31 * r + payload.contentHashCode()
         return r
     }
@@ -61,8 +69,16 @@ class BlobChunk(
 object BlobChunkCodec {
     val MAGIC: ByteArray = byteArrayOf('B'.code.toByte(), 'L'.code.toByte(), 'B'.code.toByte(), '1'.code.toByte())
 
-    /** Hard cap on one blob (a voice note). Enforced on split AND on receive. */
-    const val MAX_BLOB_BYTES: Int = 600 * 1024
+    /** v1.4.0 frame: BLB1 fields plus the original file name. */
+    val MAGIC2: ByteArray = byteArrayOf('B'.code.toByte(), 'L'.code.toByte(), 'B'.code.toByte(), '2'.code.toByte())
+
+    /**
+     * Hard cap on one blob. Enforced on split AND on receive. Raised
+     * from 600 KB to 2 MB in v1.4.0 for photo/file sharing (voice
+     * notes gain headroom too). Bigger blobs still cross the mesh
+     * slowly — the cap is the honest trade-off, not an oversight.
+     */
+    const val MAX_BLOB_BYTES: Int = 2 * 1024 * 1024
 
     /** Audio bytes per chunk frame (before sealing). */
     const val CHUNK_PAYLOAD_BYTES: Int = 8 * 1024
@@ -94,6 +110,7 @@ object BlobChunkCodec {
         durationMs: Int,
         mime: String,
         chunkPayloadBytes: Int = CHUNK_PAYLOAD_BYTES,
+        name: String = "",
     ): List<ByteArray> {
         require(data.isNotEmpty()) { "Blob must not be empty" }
         require(data.size <= MAX_BLOB_BYTES) {
@@ -116,15 +133,17 @@ object BlobChunkCodec {
                     durationMs = durationMs,
                     mime = mime,
                     payload = data.copyOfRange(from, to),
+                    name = name,
                 )
             )
         }
     }
 
     fun encode(chunk: BlobChunk): ByteArray {
+        val named = chunk.name.isNotEmpty()
         val baos = ByteArrayOutputStream()
         DataOutputStream(baos).use { out ->
-            out.write(MAGIC)
+            out.write(if (named) MAGIC2 else MAGIC)
             writeString(out, chunk.blobId)
             out.writeInt(chunk.index)
             out.writeInt(chunk.total)
@@ -133,6 +152,7 @@ object BlobChunkCodec {
             out.write(chunk.sha256)
             out.writeInt(chunk.durationMs)
             writeString(out, chunk.mime)
+            if (named) writeString(out, chunk.name)
             out.writeInt(chunk.payload.size)
             out.write(chunk.payload)
         }
@@ -144,8 +164,10 @@ object BlobChunkCodec {
             DataInputStream(ByteArrayInputStream(frame)).use { input ->
                 val magic = ByteArray(4)
                 input.readFully(magic)
-                if (!magic.contentEquals(MAGIC)) {
-                    throw IllegalArgumentException("Bad blob frame magic")
+                val named = when {
+                    magic.contentEquals(MAGIC) -> false
+                    magic.contentEquals(MAGIC2) -> true
+                    else -> throw IllegalArgumentException("Bad blob frame magic")
                 }
                 val blobId = readString(input)
                 val index = input.readInt()
@@ -164,6 +186,7 @@ object BlobChunkCodec {
                 input.readFully(sha)
                 val durationMs = input.readInt()
                 val mime = readString(input)
+                val name = if (named) readString(input) else ""
                 val payloadLen = input.readInt()
                 if (payloadLen < 0 || payloadLen > MAX_BLOB_BYTES) {
                     throw IllegalArgumentException("Invalid payload length: $payloadLen")
@@ -176,7 +199,7 @@ object BlobChunkCodec {
                 if (input.available() != 0) {
                     throw IllegalArgumentException("Trailing bytes in blob frame")
                 }
-                return BlobChunk(blobId, index, total, totalBytes, sha, durationMs, mime, payload)
+                return BlobChunk(blobId, index, total, totalBytes, sha, durationMs, mime, payload, name)
             }
         } catch (e: EOFException) {
             throw IllegalArgumentException("Truncated blob frame", e)
@@ -232,6 +255,7 @@ class BlobReassembler {
     private var sha256: ByteArray? = null
     private var durationMs: Int = 0
     private var mime: String = ""
+    private var name: String = ""
     private val chunks = mutableMapOf<Int, ByteArray>()
 
     val id: String? get() = blobId
@@ -241,6 +265,7 @@ class BlobReassembler {
     val expectedSha256: ByteArray? get() = sha256?.copyOf()
     val mediaDurationMs: Int get() = durationMs
     val mediaMime: String get() = mime
+    val mediaName: String get() = name
 
     fun isComplete(): Boolean = total > 0 && chunks.size == total
 
@@ -265,6 +290,7 @@ class BlobReassembler {
             sha256 = chunk.sha256.copyOf()
             durationMs = chunk.durationMs
             mime = chunk.mime
+            name = chunk.name
         } else {
             if (chunk.blobId != knownId ||
                 chunk.total != total ||

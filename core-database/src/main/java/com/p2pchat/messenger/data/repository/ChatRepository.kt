@@ -45,6 +45,11 @@ class ChatRepository(
     private val router: MeshRouter? = null,
     private val voiceDir: File
 ) {
+    /** Received/sent photos and files live next to the voice dir. */
+    private val mediaDir: File by lazy {
+        File(voiceDir.parentFile ?: voiceDir, "media")
+    }
+
     val conversations: Flow<List<ConversationEntity>> = db.conversationDao().observeAll()
 
     fun searchConversations(query: String): Flow<List<ConversationEntity>> =
@@ -244,11 +249,102 @@ class ChatRepository(
     }
 
     /**
+     * Send a photo or a file (v1.4.0) through the same chunked blob
+     * machinery as voice notes: the bytes ride sealed chunk envelopes,
+     * and the message reaches DELIVERED only when every chunk has been
+     * ACKed by the recipient. The message kind is derived from [mime]
+     * on BOTH sides (image mime → photo bubble, anything else → file
+     * card), so sender and receiver always render the same thing.
+     * [name] is the original file name, carried in every BLB2 frame.
+     */
+    suspend fun sendMedia(
+        peerId: String,
+        bytes: ByteArray,
+        mime: String,
+        name: String
+    ): MessageEntity {
+        val peer = requireChatReadyPeer(peerId)
+        require(bytes.size in 1..BlobChunkCodec.MAX_BLOB_BYTES) {
+            "File is ${bytes.size} bytes — the mesh limit is " +
+                "${BlobChunkCodec.MAX_BLOB_BYTES} bytes."
+        }
+        val blobId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        mediaDir.mkdirs()
+        val stored = File(mediaDir, "$blobId.${mediaExtension(name, mime)}")
+        stored.writeBytes(bytes)
+
+        val kind = kindForMime(mime)
+        val frames = BlobChunkCodec.split(blobId, bytes, 0, mime, name = name)
+        db.voiceTransferDao().upsert(
+            VoiceTransferEntity(
+                blobId = blobId,
+                conversationPeerId = peerId,
+                isMine = true,
+                totalChunks = frames.size,
+                completedChunks = 0,
+                totalBytes = bytes.size.toLong(),
+                sha256Hex = BlobChunkCodec.sha256Hex(bytes),
+                durationMs = 0,
+                state = VoiceTransferEntity.STATE_ACTIVE,
+                filePath = stored.absolutePath,
+                createdAtMs = now
+            )
+        )
+        val entity = MessageEntity(
+            messageId = blobId,
+            conversationPeerId = peerId,
+            senderId = identity.peerId,
+            recipientId = peerId,
+            plaintext = name,
+            timestampMs = now,
+            expiryMs = now + MessageEnvelope.DEFAULT_EXPIRY_MS,
+            deliveryState = DeliveryState.QUEUED.name,
+            hopCount = 0,
+            isMine = true,
+            kind = kind,
+            mediaPath = stored.absolutePath,
+            durationMs = 0,
+            blobId = blobId
+        )
+        db.messageDao().insert(entity)
+        upsertConversation(
+            peerId = peerId,
+            displayName = peer.displayName,
+            preview = if (kind == MessageEntity.KIND_IMAGE) {
+                MessageEntity.IMAGE_PREVIEW
+            } else {
+                MessageEntity.filePreview(name)
+            },
+            atMs = now,
+            incrementUnread = false,
+            messageId = blobId,
+            mine = true,
+            state = DeliveryState.QUEUED.name,
+            kind = kind
+        )
+        frames.forEachIndexed { index, frame ->
+            val envelope = sealChunkEnvelope(peer, frame, now)
+            db.voiceChunkDao().upsert(
+                VoiceChunkEntity(
+                    blobId = blobId,
+                    chunkIndex = index,
+                    envelopeMessageId = envelope.messageId,
+                    payload = null,
+                    state = DeliveryState.QUEUED.name
+                )
+            )
+            dispatch(envelope)
+        }
+        return entity
+    }
+
+    /**
      * One decrypted BLOB chunk arrived (the router already verified,
      * decrypted and ACKed it). Stores the chunk; when the last missing
-     * chunk lands, reassembles, verifies SHA-256, writes the .m4a and
-     * inserts the voice message into the sender's conversation. Partial
-     * or corrupt blobs never become messages.
+     * chunk lands, reassembles, verifies SHA-256, writes the media
+     * file and inserts the message into the sender's conversation.
+     * Partial or corrupt blobs never become messages.
      */
     suspend fun handleIncomingBlobChunk(envelope: MessageEnvelope, frameBytes: ByteArray) {
         val chunk = try {
@@ -338,9 +434,23 @@ class ChatRepository(
             return
         }
 
-        voiceDir.mkdirs()
-        val outFile = File(voiceDir, "${chunk.blobId}.m4a")
+        // One completion path for every blob kind (v1.4.0): the kind
+        // is derived from the mime announced in the frames, exactly as
+        // the sender derived it — voice keeps its .m4a home, photos
+        // and files land in the media dir under their own extension.
+        val kind = kindForMime(chunk.mime)
+        val isVoice = kind == MessageEntity.KIND_VOICE
+        val dir = if (isVoice) voiceDir else mediaDir
+        dir.mkdirs()
+        val ext = if (isVoice) "m4a" else mediaExtension(chunk.name, chunk.mime)
+        val outFile = File(dir, "${chunk.blobId}.$ext")
         outFile.writeBytes(assembled)
+        val displayName = when {
+            isVoice -> ""
+            chunk.name.isNotEmpty() -> chunk.name
+            kind == MessageEntity.KIND_IMAGE -> "photo.$ext"
+            else -> "file.$ext"
+        }
         if (db.messageDao().getById(chunk.blobId) == null) {
             db.messageDao().insert(
                 MessageEntity(
@@ -348,15 +458,15 @@ class ChatRepository(
                     conversationPeerId = senderId,
                     senderId = senderId,
                     recipientId = identity.peerId,
-                    plaintext = "",
+                    plaintext = displayName,
                     timestampMs = envelope.timestampMs,
                     expiryMs = envelope.expiryMs,
                     deliveryState = DeliveryState.DELIVERED.name,
                     hopCount = envelope.hopCount,
                     isMine = false,
-                    kind = MessageEntity.KIND_VOICE,
+                    kind = kind,
                     mediaPath = outFile.absolutePath,
-                    durationMs = chunk.durationMs,
+                    durationMs = if (isVoice) chunk.durationMs else 0,
                     blobId = chunk.blobId
                 )
             )
@@ -364,13 +474,17 @@ class ChatRepository(
             upsertConversation(
                 peerId = senderId,
                 displayName = peer?.displayName ?: senderId.take(8),
-                preview = MessageEntity.VOICE_PREVIEW,
+                preview = when (kind) {
+                    MessageEntity.KIND_VOICE -> MessageEntity.VOICE_PREVIEW
+                    MessageEntity.KIND_IMAGE -> MessageEntity.IMAGE_PREVIEW
+                    else -> MessageEntity.filePreview(displayName)
+                },
                 atMs = envelope.timestampMs,
                 incrementUnread = true,
                 messageId = chunk.blobId,
                 mine = false,
                 state = DeliveryState.DELIVERED.name,
-                kind = MessageEntity.KIND_VOICE
+                kind = kind
             )
         }
         db.voiceTransferDao().updateProgress(
@@ -411,7 +525,18 @@ class ChatRepository(
         val peer = db.peerDao().getById(transfer.conversationPeerId) ?: return
         if (peer.x25519Public.isEmpty()) return
         val bytes = file.readBytes()
-        val frames = BlobChunkCodec.split(blobId, bytes, transfer.durationMs, VOICE_MIME)
+        // Media blobs (v1.4.0) re-split with their own mime + name, so a
+        // retried photo/file still arrives as the same kind with its
+        // file name intact; voice notes keep the original frame shape.
+        val message = db.messageDao().getById(blobId)
+        val (retryMime, retryName) = when (message?.kind) {
+            MessageEntity.KIND_IMAGE, MessageEntity.KIND_FILE ->
+                mimeForExtension(file.extension) to message.plaintext
+            else -> VOICE_MIME to ""
+        }
+        val frames = BlobChunkCodec.split(
+            blobId, bytes, transfer.durationMs, retryMime, name = retryName
+        )
         val now = System.currentTimeMillis()
         db.voiceChunkDao().getAllForBlob(blobId)
             .filter { it.state != DeliveryState.DELIVERED.name }
@@ -592,6 +717,50 @@ class ChatRepository(
 
     companion object {
         const val VOICE_MIME: String = "audio/mp4"
+
+        /** The single kind rule both sides apply (v1.4.0). */
+        fun kindForMime(mime: String): String = when {
+            mime == VOICE_MIME -> MessageEntity.KIND_VOICE
+            mime.startsWith("image/") -> MessageEntity.KIND_IMAGE
+            else -> MessageEntity.KIND_FILE
+        }
+
+        /** Safe file extension for a stored blob: from the original
+         *  name when usable, else from the mime, else "bin". */
+        fun mediaExtension(name: String, mime: String): String {
+            val fromName = name.substringAfterLast('.', "")
+                .lowercase()
+                .filter { it.isLetterOrDigit() }
+                .take(8)
+            if (fromName.isNotEmpty()) return fromName
+            return when (mime.lowercase()) {
+                "image/jpeg" -> "jpg"
+                "image/png" -> "png"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                "application/pdf" -> "pdf"
+                "text/plain" -> "txt"
+                "audio/mpeg" -> "mp3"
+                "video/mp4" -> "mp4"
+                "application/zip" -> "zip"
+                else -> "bin"
+            }
+        }
+
+        /** Mime for a stored file's extension (blob retries). */
+        fun mimeForExtension(ext: String): String = when (ext.lowercase()) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            "pdf" -> "application/pdf"
+            "txt" -> "text/plain"
+            "mp3" -> "audio/mpeg"
+            "mp4" -> "video/mp4"
+            "zip" -> "application/zip"
+            "m4a" -> VOICE_MIME
+            else -> "application/octet-stream"
+        }
     }
 }
 

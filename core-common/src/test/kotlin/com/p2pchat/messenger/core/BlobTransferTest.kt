@@ -143,6 +143,31 @@ class BlobTransferTest {
     }
 
     @Test
+    fun `named BLB2 frames round trip with the file name intact`() {
+        val data = sampleBytes(20_000)
+        val frames = BlobChunkCodec.split(
+            "blob-file", data, 0, "application/pdf", name = "report card.pdf"
+        )
+        assertTrue(frames.size > 1)
+        val chunks = frames.map { BlobChunkCodec.decode(it) }
+        for (chunk in chunks) {
+            assertEquals("report card.pdf", chunk.name)
+            assertEquals("application/pdf", chunk.mime)
+        }
+        val reassembler = BlobReassembler()
+        for (chunk in chunks) reassembler.add(chunk)
+        assertEquals("report card.pdf", reassembler.mediaName)
+        assertEquals("application/pdf", reassembler.mediaMime)
+        assertNotNull(reassembler.assemble())
+        assertArrayEquals(data, reassembler.assemble())
+        // Named frames carry the BLB2 magic; unnamed keep BLB1.
+        assertEquals('2'.code.toByte(), frames[0][3])
+        val voiceFrames = BlobChunkCodec.split("blob-voice", data, 5_000, "audio/mp4")
+        assertEquals('1'.code.toByte(), voiceFrames[0][3])
+        assertEquals("", BlobChunkCodec.decode(voiceFrames[0]).name)
+    }
+
+    @Test
     fun `oversize and empty blobs are refused at split`() {
         try {
             BlobChunkCodec.split("blob-big", ByteArray(BlobChunkCodec.MAX_BLOB_BYTES + 1), 0, "audio/mp4")

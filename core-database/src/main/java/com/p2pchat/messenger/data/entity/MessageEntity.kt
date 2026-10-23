@@ -52,7 +52,21 @@ data class MessageEntity(
         const val KIND_TEXT: String = "TEXT"
         const val KIND_VOICE: String = "VOICE"
 
+        /** Photo sharing (v1.4.0): [plaintext] holds the file name,
+         *  [mediaPath] the stored image file. */
+        const val KIND_IMAGE: String = "IMAGE"
+
+        /** File sharing (v1.4.0): [plaintext] holds the original file
+         *  name, [mediaPath] the stored file. */
+        const val KIND_FILE: String = "FILE"
+
         /** Conversation-list preview for a voice note (WhatsApp-style). */
         const val VOICE_PREVIEW: String = "🎤 Voice message"
+
+        /** Conversation-list preview for a photo. */
+        const val IMAGE_PREVIEW: String = "📷 Photo"
+
+        /** Conversation-list preview for a shared file. */
+        fun filePreview(name: String): String = "📄 $name"
     }
 }
